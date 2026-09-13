@@ -220,12 +220,12 @@ void testStftIsSilentAtZeroGain()
 {
     beginCase ("STFT: zero band gain produces exact silence");
 
-    StftDecorrelator stft;
-    stft.prepare (kSampleRate, 10);
+    QuadratureFir stft;
+    stft.prepare (kSampleRate);
     stft.setUniformGain (0.0f);
 
     const int latency = stft.getLatencySamples();
-    checkNear ((double) latency, 256.0, 0.0, "reported latency equals the fixed frame size");
+    checkNear ((double) latency, 127.0, 0.0, "reported latency equals half the FIR kernel");
 
     auto input = makeVoiceLike (32768);
     double worst = 0.0;
@@ -239,8 +239,8 @@ void testStftSideIsQuadratureToMid()
 {
     beginCase ("STFT: the Side is in quadrature to the Mid (structurally centred)");
 
-    StftDecorrelator stft;
-    stft.prepare (kSampleRate, 10);
+    QuadratureFir stft;
+    stft.prepare (kSampleRate);
     stft.setUniformGain (1.0f);
     stft.setDuckDepth (0.0f);
 
@@ -266,8 +266,8 @@ void testStftPreservesSpectrum()
 {
     beginCase ("STFT: the Side keeps the spectrum of the Mid");
 
-    StftDecorrelator stft;
-    stft.prepare (kSampleRate, 10);
+    QuadratureFir stft;
+    stft.prepare (kSampleRate);
     stft.setUniformGain (1.0f);
     stft.setDuckDepth (0.0f);
 
@@ -297,8 +297,8 @@ void testTransientDuckIsSmooth()
 {
     beginCase ("STFT: onsets duck the Side instead of gating it off");
 
-    StftDecorrelator stft;
-    stft.prepare (kSampleRate, 10);
+    QuadratureFir stft;
+    stft.prepare (kSampleRate);
     stft.setUniformGain (1.0f);
     stft.setDuckDepth (0.9f);
 
@@ -452,6 +452,8 @@ void testTonalStability()
     const double leftRms = rms (output.left, from);
     const double rightRms = rms (output.right, from);
 
+    // The only thing that must hold for a held note is that it does not lean:
+    // the level itself is allowed to rise, that is what widening does.
     // A held note is the hardest case for any quadrature widener: the residual
     // lean has to stay well under the ~1 dB that starts to be audible.
     checkLess (std::abs (20.0 * std::log10 (leftRms / std::max (1.0e-9, rightRms))), 0.6,
