@@ -1,0 +1,193 @@
+name: Build VST3 and AAX
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feature/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wide-pocket-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLUGIN_VERSION: "0.1.0"
+  JUCE_VERSION: "8.0.4"
+  PLUGINVAL_VERSION: "v1.0.4"
+
+jobs:
+  macos:
+    name: macOS universal
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        id: juce-cache
+        uses: actions/cache@v4
+        with:
+          path: JUCE
+          key: juce-${{ env.JUCE_VERSION }}-macos
+
+      - name: Download JUCE ${{ env.JUCE_VERSION }}
+        if: steps.juce-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 "https://github.com/juce-framework/JUCE/releases/download/${JUCE_VERSION}/juce-${JUCE_VERSION}-osx.zip" -o juce.zip
+          unzip -q juce.zip
+          test -d JUCE/modules/juce_audio_processors || { echo "::error::JUCE ${JUCE_VERSION} layout unexpected"; exit 1; }
+
+      - name: Verify bundled AAX SDK
+        run: |
+          set -euo pipefail
+          if [[ ! -d "JUCE/modules/juce_audio_plugin_client/AAX/SDK/Interfaces" ]]; then
+            echo "::error::JUCE ${JUCE_VERSION} does not contain the bundled AAX SDK; the AAX target cannot be configured"
+            exit 1
+          fi
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Xcode \
+            -DJUCE_DIR="$PWD/JUCE" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: DSP tests
+        run: |
+          set -euo pipefail
+          cmake --build build --config Release --target WidePocketTests
+          ctest --test-dir build -C Release --output-on-failure
+
+      - name: Build VST3 and AAX
+        run: cmake --build build --config Release --target WidePocket_VST3 WidePocket_AAX
+
+      - name: Ad-hoc sign and inspect
+        run: |
+          set -euo pipefail
+          VST3="build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3"
+          AAX="build/WidePocket_artefacts/Release/AAX/Wide Pocket.aaxplugin"
+          codesign --force --deep --sign - "$VST3"
+          codesign --force --deep --sign - "$AAX"
+          codesign --verify --deep --strict --verbose=2 "$VST3"
+          codesign --verify --deep --strict --verbose=2 "$AAX"
+          lipo "$VST3/Contents/MacOS/Wide Pocket" -verify_arch arm64 x86_64
+          lipo "$AAX/Contents/MacOS/Wide Pocket" -verify_arch arm64 x86_64
+
+      - name: Validate VST3 with pluginval
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 "https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/pluginval_macOS.zip" -o pluginval.zip
+          unzip -q pluginval.zip
+          chmod +x pluginval.app/Contents/MacOS/pluginval
+          pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --validate \
+            "$PWD/build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3" 2>&1 | tee pluginval-macos.log
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent "build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3" "WidePocket-v${PLUGIN_VERSION}-macOS-Universal-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/WidePocket_artefacts/Release/AAX/Wide Pocket.aaxplugin" "WidePocket-v${PLUGIN_VERSION}-macOS-Universal-AAX-Developer.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WidePocket-macOS-Universal-VST3
+          path: WidePocket-v*-macOS-Universal-VST3.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WidePocket-macOS-Universal-AAX-Developer
+          path: WidePocket-v*-macOS-Universal-AAX-Developer.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-log-macos
+          path: pluginval-macos.log
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        id: juce-cache
+        uses: actions/cache@v4
+        with:
+          path: JUCE
+          key: juce-${{ env.JUCE_VERSION }}-windows
+
+      - name: Download JUCE ${{ env.JUCE_VERSION }}
+        if: steps.juce-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest "https://github.com/juce-framework/JUCE/archive/refs/tags/$env:JUCE_VERSION.zip" -OutFile juce.zip
+          Expand-Archive juce.zip -DestinationPath juce-unpack
+          Move-Item "juce-unpack/JUCE-$env:JUCE_VERSION" JUCE
+
+      - name: Verify bundled AAX SDK
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "JUCE/modules/juce_audio_plugin_client/AAX/SDK/Interfaces")) {
+            Write-Error "JUCE $env:JUCE_VERSION does not contain the bundled AAX SDK; the AAX target cannot be configured"
+          }
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DJUCE_DIR="${{ github.workspace }}/JUCE"
+
+      - name: DSP tests
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target WidePocketTests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build VST3 and AAX
+        run: cmake --build build --config Release --target WidePocket_VST3 WidePocket_AAX
+
+      - name: Validate VST3 with pluginval
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest "https://github.com/Tracktion/pluginval/releases/download/$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval-unpack
+          $validator = (Get-ChildItem pluginval-unpack -Recurse -Filter pluginval.exe | Select-Object -First 1).FullName
+          if (-not $validator) { throw "pluginval executable not found" }
+          & $validator --strictness-level 5 --validate "$PWD/build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3" 2>&1 | Tee-Object -FilePath pluginval-windows.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3" -DestinationPath "WidePocket-v$env:PLUGIN_VERSION-Windows-x64-VST3.zip"
+          Compress-Archive -Path "build/WidePocket_artefacts/Release/AAX/Wide Pocket.aaxplugin" -DestinationPath "WidePocket-v$env:PLUGIN_VERSION-Windows-x64-AAX-Developer.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WidePocket-Windows-x64-VST3
+          path: WidePocket-v*-Windows-x64-VST3.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WidePocket-Windows-x64-AAX-Developer
+          path: WidePocket-v*-Windows-x64-AAX-Developer.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-log-windows
+          path: pluginval-windows.log
+          if-no-files-found: ignore

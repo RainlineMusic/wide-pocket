@@ -1,0 +1,50 @@
+# Build output
+build/
+build-*/
+cmake-build*/
+out/
+Release/
+Debug/
+*_artefacts/
+JuceLibraryCode/
+
+# Dependencies fetched at build time (never vendored)
+JUCE/
+juce-*/
+juce*.zip
+pluginval*
+
+# Local test binaries and measurement output
+*_test
+*_test.exe
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.dll
+*.dylib
+*.so
+*.pdb
+*.ilk
+measurements/
+*.log
+*.wav
+
+# IDE and OS noise
+.vs/
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+.DS_Store
+Thumbs.db
+
+# Signing material must never be committed
+*.p12
+*.cer
+*.pem
+*.mobileprovision
+.env
