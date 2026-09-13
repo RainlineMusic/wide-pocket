@@ -1,12 +1,19 @@
 /*
     Wide Pocket - plugin editor.
     Copyright (c) 2026 Rainline Music. All Rights Reserved.
+
+    Design grid: 1000 x 527. The stereo image on the left is exactly as tall
+    as the dial panel on the right, and its field is a true half circle, so
+    the dome is never stretched.
 */
 
 #include "PluginEditor.h"
 
 namespace
 {
+
+constexpr float kDesignWidth = 1000.0f;
+constexpr double kDesignAspect = 1000.0 / 527.0;
 
 juce::Font uiFont (float size)
 {
@@ -307,8 +314,6 @@ void ModernDial::paint (juce::Graphics& g)
     juce::String value;
     if (unit == "Hz")
         value = hzLabel (getValue());
-    else if (unit == "dB")
-        value = juce::String (getValue(), decimals) + " dB";
     else
         value = juce::String (getValue(), decimals) + unit;
 
@@ -349,18 +354,14 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
     setOpaque (true);
     setResizable (true, true);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &widthDial, &focusDial, &airDial, &stabilityDial,
-                                                            &sibilanceDial, &transientDial, &outputDial,
+    for (auto* c : std::initializer_list<juce::Component*> { &widthDial, &airDial, &outputDial,
                                                             &settingsButton, &bypassButton })
         addAndMakeVisible (c);
 
     widthAttach = std::make_unique<SliderAttachment> (p.parameters, "width", widthDial);
-    focusAttach = std::make_unique<SliderAttachment> (p.parameters, "focus", focusDial);
     airAttach = std::make_unique<SliderAttachment> (p.parameters, "air", airDial);
-    stabilityAttach = std::make_unique<SliderAttachment> (p.parameters, "stability", stabilityDial);
-    sibilanceAttach = std::make_unique<SliderAttachment> (p.parameters, "sibilanceGuard", sibilanceDial);
-    transientAttach = std::make_unique<SliderAttachment> (p.parameters, "transientFocus", transientDial);
     outputAttach = std::make_unique<SliderAttachment> (p.parameters, "output", outputDial);
+    airDial.setDoubleClickReturnValue (true, 0.0);
     outputDial.setDoubleClickReturnValue (true, 0.0);
 
     bypassButton.setClickingTogglesState (true);
@@ -384,23 +385,19 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
     settingsButton.onClick = [this] { showSettingsMenu(); };
 
     widthDial.setTooltip ("Stereo spread of the synthesised Side signal. The mono sum never changes.");
-    focusDial.setTooltip ("Keeps the intelligibility range of the voice centred while the rest spreads.");
-    airDial.setTooltip ("Extra width in the top octaves, as a pure band gain, so the image cannot move.");
-    stabilityDial.setTooltip ("How quickly the width follows the voice. Higher is calmer.");
-    sibilanceDial.setTooltip ("Pulls the width back on s and t sounds, which is where widening gets harsh.");
-    transientDial.setTooltip ("Pulls the width back on plosives and syllable attacks.");
+    airDial.setTooltip ("Tone of the sides: left of centre is darker, right of centre is brighter. Pure band gain, so the image cannot move.");
     outputDial.setTooltip ("Output gain. Double-click resets to 0 dB.");
     bypassButton.setTooltip ("Enable / bypass processing");
     settingsButton.setTooltip ("Settings");
 
     int width = p.editorWidth.load();
-    if (width < 800 || width > 1500)
-        width = preferences->getIntValue ("widePocket.ui.width", 960);
-    width = juce::jlimit (800, 1500, width);
+    if (width < 820 || width > 1500)
+        width = preferences->getIntValue ("widePocket.ui.width", 1000);
+    width = juce::jlimit (820, 1500, width);
 
-    setResizeLimits (800, 530, 1500, 1400);
-    getConstrainer()->setFixedAspectRatio (960.0 / 636.0);
-    setSize (width, juce::roundToInt (width * 636.0 / 960.0));
+    setResizeLimits (820, juce::roundToInt (820.0 / kDesignAspect), 1500, juce::roundToInt (1500.0 / kDesignAspect));
+    getConstrainer()->setFixedAspectRatio (kDesignAspect);
+    setSize (width, juce::roundToInt (double (width) / kDesignAspect));
 
     ready = true;
     p.editorWidth.store (width);
@@ -519,30 +516,23 @@ void WidePocketAudioProcessorEditor::captureBlurSnapshot()
 
 juce::Rectangle<int> WidePocketAudioProcessorEditor::scaled (float x, float y, float w, float h) const
 {
-    const float s = float (getWidth()) / 960.0f;
+    const float s = float (getWidth()) / kDesignWidth;
     return { juce::roundToInt (x * s), juce::roundToInt (y * s), juce::roundToInt (w * s), juce::roundToInt (h * s) };
 }
 
 void WidePocketAudioProcessorEditor::resized()
 {
-    settingsButton.setBounds (scaled (838, 22, 40, 40));
-    bypassButton.setBounds (scaled (888, 22, 40, 40));
+    settingsButton.setBounds (scaled (886, 22, 40, 40));
+    bypassButton.setBounds (scaled (936, 22, 40, 40));
 
-    // Right hand column, on the Phase Pocket grid: the two big dials inside
-    // the single outlined panel, with the small Output between them.
-    widthDial.setBounds (scaled (725, 104, 200, 220));
-    focusDial.setBounds (scaled (725, 350, 200, 220));
-    outputDial.setBounds (scaled (848, 293, 84, 84));
+    // Right hand column: the two big dials inside the single outlined panel,
+    // with the small Output between them.
+    widthDial.setBounds (scaled (775, 103, 170, 187));
+    airDial.setBounds (scaled (775, 312, 170, 187));
+    outputDial.setBounds (scaled (878, 259, 78, 78));
     outputDial.toFront (false);
 
-    // Voice control row, centred inside the lower block that now starts
-    // under the taller scope.
-    airDial.setBounds (scaled (75, 444, 116, 116));
-    stabilityDial.setBounds (scaled (227, 444, 116, 116));
-    sibilanceDial.setBounds (scaled (379, 444, 116, 116));
-    transientDial.setBounds (scaled (531, 444, 116, 116));
-
-    blurArea = scaled (12, 82, 936, 542);
+    blurArea = scaled (12, 82, 976, 437);
     blurredSnapshot = {};
 
     if (ready)
@@ -617,7 +607,7 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
 {
     const bool glow = look.theme != PocketTheme::SolidWhite;
     const float textGlow = glow ? 0.075f : 0.0f;
-    const float s = float (getWidth()) / 960.0f;
+    const float s = float (getWidth()) / kDesignWidth;
 
     g.setColour (look.pick (0xff050b13, 0xff111111, 0xffffffff));
     g.fillRoundedRectangle (box, 12.0f);
@@ -631,24 +621,25 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
 
     auto field = box.withTrimmedTop (40.0f * s).reduced (26.0f * s, 16.0f * s);
 
-    const float halfWidth = field.getWidth() * 0.5f;
-    const float height = field.getHeight();
+    // A true half circle: one radius for both axes, so the dome is never
+    // stretched no matter how the window is resized.
+    const float radius = juce::jmin (field.getWidth() * 0.5f, field.getHeight());
     const float centreX = field.getCentreX();
     const float baseY = field.getBottom();
 
-    const auto domePoint = [centreX, baseY, halfWidth, height] (float angle, float magnitude)
+    const auto domePoint = [centreX, baseY, radius] (float angle, float magnitude)
     {
-        return juce::Point<float> (centreX + std::sin (angle) * magnitude * halfWidth,
-                                   baseY - std::cos (angle) * magnitude * height);
+        return juce::Point<float> (centreX + std::sin (angle) * magnitude * radius,
+                                   baseY - std::cos (angle) * magnitude * radius);
     };
 
-    // Grid: three stretched arcs plus the L / C / R guide lines.
+    // Grid: three arcs plus the L / C / R guide lines.
     for (const float magnitude : { 0.33f, 0.66f, 1.0f })
     {
         juce::Path arc;
-        for (int step = 0; step <= 48; ++step)
+        for (int step = 0; step <= 96; ++step)
         {
-            const float angle = juce::MathConstants<float>::halfPi * (-1.0f + 2.0f * float (step) / 48.0f);
+            const float angle = juce::MathConstants<float>::halfPi * (-1.0f + 2.0f * float (step) / 96.0f);
             const auto point = domePoint (angle, magnitude);
 
             if (step == 0)
@@ -672,18 +663,18 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
         g.drawLine (centreX, baseY, point.x, point.y, angle == 0.0f ? 0.9f : 0.6f);
     }
 
-    text (g, "L", { field.getX() - 4.0f * s, baseY - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
+    text (g, "L", { centreX - radius - 4.0f * s, baseY - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
           juce::Justification::centred, textGlow);
-    text (g, "C", { centreX - 10.0f * s, field.getY() - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
+    text (g, "C", { centreX - 10.0f * s, baseY - radius - 20.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
           juce::Justification::centred, textGlow);
-    text (g, "R", { field.getRight() - 16.0f * s, baseY - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
+    text (g, "R", { centreX + radius - 16.0f * s, baseY - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
           juce::Justification::centred, textGlow);
 
     // Correlation scale on the right, as on the reference display.
-    const auto scaleArea = juce::Rectangle<float> (box.getRight() - 22.0f * s, field.getY(), 20.0f * s, height);
+    const auto scaleArea = juce::Rectangle<float> (box.getRight() - 22.0f * s, baseY - radius, 20.0f * s, radius);
     for (int i = 0; i <= 2; ++i)
         text (g, i == 0 ? "+1" : (i == 1 ? "0" : "-1"),
-              { scaleArea.getX(), scaleArea.getY() + height * 0.5f * float (i) - 8.0f * s, 20.0f * s, 16.0f * s },
+              { scaleArea.getX(), scaleArea.getY() + radius * 0.5f * float (i) - 8.0f * s, 20.0f * s, 16.0f * s },
               9.5f * s, secondary, juce::Justification::centredRight, textGlow);
 
     const auto accent = look.isNeon() ? juce::Colour (0xff32d4cb) : look.pick (0, 0xffd8d8d8, 0xff3a3c40);
@@ -732,42 +723,30 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
     const float correlation = juce::jlimit (-1.0f, 1.0f, latest.correlation);
     g.setColour (accent.withAlpha (0.9f));
     g.fillEllipse (scaleArea.getX() - 6.0f * s,
-                   scaleArea.getY() + height * 0.5f * (1.0f - correlation) - 2.0f,
+                   scaleArea.getY() + radius * 0.5f * (1.0f - correlation) - 2.0f,
                    4.0f * s, 4.0f * s);
 }
 
 void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    const float s = float (getWidth()) / 960.0f;
+    const float s = float (getWidth()) / kDesignWidth;
 
     g.fillAll (look.pick (0xff060b12, 0xff171717, 0xfff1f1f1));
 
     // Header on the Phase Pocket grid: the same 39 px centred product name
     // and the same thin separator underneath it.
-    text (g, "WIDE POCKET", scaled (180, 14, 600, 54).toFloat(), 39.0f * s, look.ink(),
+    text (g, "WIDE POCKET", scaled (200, 14, 600, 54).toFloat(), 39.0f * s, look.ink(),
           juce::Justification::centred);
 
     g.setColour (look.pick (0xff263347, 0xff444444, 0xffc5c6c8));
-    g.fillRect (scaled (24, 78, 912, 1).toFloat());
+    g.fillRect (scaled (24, 78, 952, 1).toFloat());
 
     // The only outlined panel sits around the two big dials on the right.
-    panel (g, scaled (714, 94, 222, 480).toFloat());
+    panel (g, scaled (766, 94, 210, 409).toFloat());
 
-    // Stereo image, 30 percent taller than before so the wide dome no longer
-    // looks stretched.
-    vectorScope (g, scaled (24, 94, 674, 299).toFloat());
-
-    // Lower block: the four voice control dials, drawn like the scope rather
-    // than as a second outlined panel.
-    {
-        const auto box = scaled (24, 407, 674, 167).toFloat();
-
-        g.setColour (look.pick (0xff050b13, 0xff111111, 0xffffffff));
-        g.fillRoundedRectangle (box, 12.0f);
-
-        text (g, "VOICE CONTROL", { box.getX() + 18.0f * s, box.getY() + 12.0f * s, 260.0f * s, 24.0f * s }, 13.0f * s,
-              look.ink(), juce::Justification::centredLeft, look.isNeon() ? 0.075f : 0.0f);
-    }
+    // Stereo image: exactly as tall as the dial panel, and wide enough for an
+    // undistorted half circle inside it.
+    vectorScope (g, scaled (24, 94, 726, 409).toFloat());
 }
 
 void WidePocketAudioProcessorEditor::paintOverChildren (juce::Graphics& g)

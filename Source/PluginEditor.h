@@ -6,6 +6,10 @@
     themes, same dial and button drawing, same gear menu, same power bypass
     with the frozen blurred snapshot. Only the control set and the layout are
     new.
+
+    v0.4 UI: only Width, Air and Output are exposed. Focus, Stability,
+    Sibilance and Transient stay at their defaults inside the engine, which is
+    where they were measured to work best.
 */
 
 #pragma once
@@ -82,17 +86,12 @@ private:
     PocketLook look;
 
     ModernDial widthDial { look, "Width", "Stereo spread", "%", 0xff5987ff };
-    ModernDial focusDial { look, "Focus", "Intelligibility", "%", 0xff32d4cb };
-    ModernDial airDial { look, "Air", "Top octaves", "%", 0xfff1e84b, true };
-    ModernDial stabilityDial { look, "Stability", "Adaptation", "%", 0xff5987ff, true };
-    ModernDial sibilanceDial { look, "Sibilance", "Guard", "%", 0xfff1e84b, true };
-    ModernDial transientDial { look, "Transient", "Focus", "%", 0xff5987ff, true };
-    ModernDial outputDial { look, "Output", "dB", "dB", 0xfff1e84b, true, 2 };
+    ModernDial airDial { look, "Air", "Dark to bright", "%", 0xff32d4cb };
+    ModernDial outputDial { look, "Output", "dB", "", 0xfff1e84b, true, 2 };
 
     juce::TextButton settingsButton { "settings" }, bypassButton { "power" };
 
-    std::unique_ptr<SliderAttachment> widthAttach, focusAttach, airAttach, stabilityAttach,
-        sibilanceAttach, transientAttach, outputAttach;
+    std::unique_ptr<SliderAttachment> widthAttach, airAttach, outputAttach;
     std::unique_ptr<ButtonAttachment> bypassAttach;
 
     std::unique_ptr<juce::PropertiesFile> preferences;
