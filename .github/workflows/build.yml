@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PLUGIN_VERSION: "0.1.0"
+  PLUGIN_VERSION: "0.2.0"
   JUCE_VERSION: "8.0.4"
   PLUGINVAL_VERSION: "v1.0.4"
 
