@@ -1,99 +1,103 @@
-# Wide Pocket - architecture (v0.2)
+# Wide Pocket - Natural architecture
 
-## Why v0.1 wandered, and what changed
+## Product decision
 
-v0.1 built the Side signal by rotating every STFT bin by a pseudo-random
-phase angle. That leaves a Mid-correlated component inside the Side, and the
-inter-channel level difference of `L = M + S`, `R = M - S` is exactly
-
-```
-|L|^2 - |R|^2 = 4 * sum_k Re{ M[k] * conj(S[k]) }
-```
-
-so a random rotation produces a real, static image bias - the "leans left"
-report. Every frequency dependent stage on top of it (the Air shelf, the
-guards) biased the image differently per band, which is why sibilants pulled
-right and vowels pulled left, and why the broadband Center Lock could only
-replace a static offset with slow left-right movement.
-
-v0.2 removes the cause instead of correcting the symptom:
-
-```
-S[k] = j * s[k] * g[k] * M[k],   s[k] in {-1, +1},  g[k] real
-```
-
-Every bin of the Side is exactly 90 degrees from the same bin of the Mid, so
-`Re{M * conj(S)} = 0` in every bin and the level difference is identically
-zero for *any* set of real band gains. Decorrelation comes from the frequency
-dependent +-1 sign pattern (fixed seed, groups of three bins), which never
-touches magnitudes.
+Wide Pocket now has one widening engine: Natural. Efficient/velvet noise,
+Smart/ML scaffolding, the engine selector, the analysis drawer, runtime Quality
+switching and the forced mono region below 150 Hz have been removed.
 
 ## Signal flow
 
 ```
-in -> M/S encode -> analyser (Mid only)
-        |
-        +-> Natural / Smart : STFT quadrature Side generator
-        +-> Efficient       : sparse velvet noise FIR
-                  |
-                  +-> equal power crossfade between engines
-                             |
-                   real, slow scalar guards
-              (Sibilance Guard, Transient Focus, Smart trim)
-                             |
-delayed Mid ----> M/S decode ---> output gain ---> out
-             (centre alignment safety net in between)
+input -> M/S encode
+          |\
+          | +-> immutable 256-sample delay -------------------- Mid
+          |
+          +-> 256-point sine-window STFT, 50% overlap
+                -> 4-frame pre-delay
+                -> four complex subband Schroeder allpasses
+                   (gamma 0.7, delays 1/2/3/5 frames)
+                -> per-bin t/F envelope reconstruction
+                -> perceptual-band spectral centre lock
+                -> transient hold / recursive-path exclusion
+                -> slow real Width/Focus/Air gains ----------- Side
+
+L = Mid + original Side + generated Side
+R = Mid - original Side - generated Side
 ```
 
-- **Width, Focus, Air, spatial mask, low-end mono** are real per-band gains on
-  the quadrature Side. None of them can move the image.
-- **Focus** is now a real presence-band narrowing curve (~300 Hz - 3 kHz) with
-  a top-end lift. In v0.1 the same mild curve was applied twice, in the engine
-  and again in the Smart controller, which is why the knob did almost nothing.
-- **Air** is no longer a minimum-phase shelf. A shelf on the Side is a
-  frequency dependent phase shift, i.e. an image bias.
-- **Sibilance Guard / Transient Focus / plosive duck** are one slow real
-  scalar. They change how wide, never where.
-- **Low mono** is an internal 150 Hz constant, not a user parameter.
-- **CenterAlignment** is a six-band projection `S' = S - sum c_b * m_b` that
-  only has work to do on the velvet (Efficient) path, whose shaping filters
-  are minimum phase. With the quadrature engines its coefficients sit at zero.
+## Stable centre
 
-## Removed switches
+The old six-band time-domain CenterAlignment was a feedback correction after the
+image had already been formed. Its overlapping crossover bands could chase
+phonemes independently and turn a static bias into image movement.
 
-Mono Safe, Center Lock and Auto Gain are gone, and they are not hidden
-parameters either:
+Natural instead performs centre correction before synthesis, in the STFT domain
+where Side is created. For every perceptual band it removes only the in-phase
+projection of the processed spectrum onto the direct spectrum:
 
-- the Mid path is a pure delay, so the mono sum is always exactly the dry
-  signal - "mono safe" is structural,
-- the Side is quadrature to the Mid, so the image is centred by construction -
-  there is nothing to lock and nothing to measure, therefore nothing to drift,
-- the Side adds no broadband level to the sum, so there is nothing for an auto
-  gain stage to chase.
+```
+c_b = sum Re{X[k] conj(Y[k])} / sum |X[k]|^2
+Y_locked[k] = Y[k] - c_b X[k]
+```
 
-## Invariants enforced by `Tests/dsp_core_test.cpp`
+The remaining band is energy-normalised. This controls the cause of L/R level
+bias without moving separate formants with time-domain crossover filters. The
+original Mid is never modified and existing stereo Side is preserved.
 
-- zero band gain gives exact silence, so Width = 0 is a sample-exact null,
-- Mid and Side are uncorrelated (`|corr| < 0.05`), hence no level difference,
-- `L + R == 2 * Mid` at any setting,
-- a steady tone keeps left and right within 0.5 dB of each other,
-- latency is identical for all three engines at a given Quality,
-- no code path can emit NaN or Inf, including NaN/Inf input.
+## Decorrelator
 
-## GUI (v0.2)
+The core follows the DAFx23/MPEG-I structure:
 
-Design canvas 960 x 636, themes and drawing carried over from Phase Pocket
-v0.8 (Neon / Solid Dark / Solid White, gear menu, blurred bypass).
+- 256 samples, 50% overlap, sine analysis/synthesis window;
+- four-frame pre-delay;
+- four Schroeder allpasses with gamma 0.7 and frame delays 1, 2, 3 and 5;
+- per-bin direct/processed energy followers with alpha 0.4;
+- bounded t/F envelope reconstruction with beta 1.5;
+- a small coherent quadrature floor for stationary bin-centred harmonics.
 
-- right column: **Width** and **Focus**, with a small **Output** between them,
-- left: one wide Ozone-Imager-style stretched goniometer (`STEREO IMAGE`) with
-  a correlation scale,
-- under it: **Air**, **Stability**, **Sibilance**, **Transient**,
-- arrow drawer (bottom left) holds the **Engine** selector and the four debug
-  readouts,
-- **Quality** lives only in the gear menu.
+There are no random +/-j bin groups. Phase evolution comes from the allpass
+states and remains smooth across the source instead of assigning neighbouring
+vocal partials to arbitrary sides.
 
-The scope reads a dense point stream (one point every `sampleRate / 12000`
-samples, ~200 per displayed frame at 60 fps) instead of one point per audio
-block, and its Side axis is `(R - L)`, so left-heavy material draws on the
-left like every external meter. Both were wrong in v0.1.
+## Transients
+
+An onset detector uses the DAFx23 energy ratio (threshold 2.8), an eight-frame
+hold and a 56-frame inhibit period. During a detected onset the processed Side
+is muted and the transient frame is not written into the recursive pre-delay.
+The latter prevents the onset from reappearing later as an allpass tail.
+
+The vocal analyser additionally applies a slow, scalar plosive/sibilance guard.
+A real broadband scalar changes width but cannot pan the source.
+
+## Controls
+
+- Width maps perceptually to generated Side energy and reaches useful width at
+  full scale while keeping Side below Mid.
+- Focus gently anchors the formant region but never closes a band.
+- Air adds bounded high-band Side gain.
+- Stability controls only slow width adaptation (180-520 ms).
+- Sibilance and Transient are guards, not separate engines.
+- Output is -24 to +12 dB.
+
+No band is forced mono. Content below 150 Hz follows the same bounded width law.
+
+## Fixed latency and real-time behaviour
+
+Natural has a fixed reported latency of 256 samples. There is no runtime FFT
+reconfiguration or allocation in `setParameters`. Bypass stores the original
+dry input rather than processed output and keeps the recursive engine warm in a
+preallocated scratch buffer.
+
+## Automated invariants
+
+`Tests/dsp_core_test.cpp` verifies:
+
+- Width 0 is sample-exact for mono and stereo input after latency;
+- L+R is the delayed dry mono sum at full width;
+- generated Side has useful energy and stays below Mid;
+- mean 50 ms ILD on vocal-like material is below 0.3 dB and no window exceeds
+  0.8 dB;
+- 110 Hz is allowed to widen;
+- transient clicks do not create a decorrelator tail;
+- dense automation and NaN/Inf input remain finite.

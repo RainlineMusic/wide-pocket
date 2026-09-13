@@ -12,15 +12,9 @@
 /** One snapshot of the analyser, handed to the editor without locks. */
 struct WideTrace
 {
-    float level = 0.0f;
-    float voicing = 0.0f;
-    float transient = 0.0f;
-    float sibilance = 0.0f;
     float correlation = 1.0f;
-    float appliedWidth = 0.0f;
     float left = 0.0f;
     float right = 0.0f;
-    std::array<float, wp::VocalAnalyzer::numMaskBands> bandWidth {};
 };
 
 class WidePocketAudioProcessor final : public juce::AudioProcessor
@@ -82,13 +76,12 @@ private:
     std::atomic<float>* sibilanceGuard = nullptr;
     std::atomic<float>* transientFocus = nullptr;
     std::atomic<float>* outputGain = nullptr;
-    std::atomic<float>* engineChoice = nullptr;
-    std::atomic<float>* qualityChoice = nullptr;
     std::atomic<float>* bypass = nullptr;
 
     // Dry path used while bypassed, so switching is click free and the
     // reported latency stays valid either way.
     juce::AudioBuffer<float> bypassDelayBuffer;
+    juce::AudioBuffer<float> bypassWarmBuffer;
     int bypassWritePosition = 0;
 
     // The vector scope needs a fast, dense point stream, not one point per

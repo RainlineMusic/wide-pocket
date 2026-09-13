@@ -19,8 +19,6 @@ WidePocketAudioProcessor::WidePocketAudioProcessor()
     sibilanceGuard = parameters.getRawParameterValue ("sibilanceGuard");
     transientFocus = parameters.getRawParameterValue ("transientFocus");
     outputGain = parameters.getRawParameterValue ("output");
-    engineChoice = parameters.getRawParameterValue ("engine");
-    qualityChoice = parameters.getRawParameterValue ("quality");
     bypass = parameters.getRawParameterValue ("bypass");
 }
 
@@ -28,7 +26,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidePocketAudioProcessor::la
 {
     using Float = juce::AudioParameterFloat;
     using Bool = juce::AudioParameterBool;
-    using Choice = juce::AudioParameterChoice;
 
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> p;
 
@@ -46,11 +43,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidePocketAudioProcessor::la
                                          juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 60.0f));
     p.push_back (std::make_unique<Float> (juce::ParameterID { "output", 1 }, "Output",
                                          juce::NormalisableRange<float> (-24.0f, 12.0f, 0.01f), 0.0f));
-
-    p.push_back (std::make_unique<Choice> (juce::ParameterID { "engine", 1 }, "Engine",
-                                          juce::StringArray { "Natural", "Efficient", "Smart" }, 0));
-    p.push_back (std::make_unique<Choice> (juce::ParameterID { "quality", 1 }, "Quality",
-                                          juce::StringArray { "Live", "Studio" }, 1));
 
     // No Mono Safe / Center Lock / Auto Gain parameters. The mono sum and the
     // centred image are structural properties of the engine now, so there is
@@ -81,6 +73,8 @@ void WidePocketAudioProcessor::prepareToPlay (double sampleRate, int maximumBloc
 
     bypassDelayBuffer.setSize (2, juce::jmax (1, engine.getLatencySamples() + 1), false, true, true);
     bypassDelayBuffer.clear();
+    bypassWarmBuffer.setSize (2, juce::jmax (1, maximumBlockSize), false, true, true);
+    bypassWarmBuffer.clear();
     bypassWritePosition = 0;
 
     decimation = juce::jmax (1, (int) (sampleRate / 12000.0));
@@ -91,6 +85,7 @@ void WidePocketAudioProcessor::reset()
 {
     engine.reset();
     bypassDelayBuffer.clear();
+    bypassWarmBuffer.clear();
     bypassWritePosition = 0;
     captured = 0;
 }
@@ -105,9 +100,6 @@ void WidePocketAudioProcessor::pushParameters (bool bypassed)
     p.sibilanceGuard = sibilanceGuard->load();
     p.transientFocus = transientFocus->load();
     p.outputDb = bypassed ? 0.0f : outputGain->load();
-    p.engine = (wp::Engine) juce::jlimit (0, 2, (int) engineChoice->load());
-    p.quality = (wp::Quality) juce::jlimit (0, 1, (int) qualityChoice->load());
-
     engine.setParameters (p);
 }
 
@@ -141,6 +133,16 @@ void WidePocketAudioProcessor::processAudio (juce::AudioBuffer<float>& buffer, b
 
     if (bypassed)
     {
+        // Keep the recursive decorrelator warm while returning latency-aligned
+        // dry audio. The scratch buffer is allocated in prepareToPlay.
+        if (bypassWarmBuffer.getNumSamples() >= numSamples)
+        {
+            bypassWarmBuffer.copyFrom (0, 0, buffer, 0, 0, numSamples);
+            bypassWarmBuffer.copyFrom (1, 0, buffer, numOutputChannels > 1 ? 1 : 0, 0, numSamples);
+            pushParameters (true);
+            engine.process (bypassWarmBuffer.getWritePointer (0), bypassWarmBuffer.getWritePointer (1), numSamples);
+        }
+
         // Hold the dry signal back by the reported latency so that engaging or
         // releasing bypass never shifts the timing against other tracks.
         const int delayLength = bypassDelayBuffer.getNumSamples();
@@ -169,23 +171,23 @@ void WidePocketAudioProcessor::processAudio (juce::AudioBuffer<float>& buffer, b
 
     pushParameters (false);
 
-    auto* left = buffer.getWritePointer (0);
-    auto* right = numOutputChannels > 1 ? buffer.getWritePointer (1) : left;
-
-    engine.process (left, right, numSamples);
-
-    // Keep the bypass delay line primed, so switching into bypass is seamless.
+    // Prime bypass with the original dry input, never the processed output.
     const int delayLength = bypassDelayBuffer.getNumSamples();
     if (delayLength > 0)
     {
         for (int n = 0; n < numSamples; ++n)
         {
-            bypassDelayBuffer.setSample (0, bypassWritePosition, left[n]);
-            if (bypassDelayBuffer.getNumChannels() > 1)
-                bypassDelayBuffer.setSample (1, bypassWritePosition, right[n]);
+            bypassDelayBuffer.setSample (0, bypassWritePosition, buffer.getSample (0, n));
+            bypassDelayBuffer.setSample (1, bypassWritePosition,
+                                         buffer.getSample (numOutputChannels > 1 ? 1 : 0, n));
             bypassWritePosition = (bypassWritePosition + 1) % delayLength;
         }
     }
+
+    auto* left = buffer.getWritePointer (0);
+    auto* right = numOutputChannels > 1 ? buffer.getWritePointer (1) : left;
+
+    engine.process (left, right, numSamples);
 
     outputPeak.store (buffer.getMagnitude (0, numSamples));
 
@@ -196,8 +198,6 @@ void WidePocketAudioProcessor::processAudio (juce::AudioBuffer<float>& buffer, b
     }
 
     const auto snapshot = engine.getAnalyzerSnapshot();
-    const auto bandWidths = engine.getBandWidths();
-
     // One point every `decimation` samples, so the scope receives a dense,
     // evenly spaced stream instead of a single point per block.
     for (int n = 0; n < numSamples; ++n)
@@ -208,15 +208,9 @@ void WidePocketAudioProcessor::processAudio (juce::AudioBuffer<float>& buffer, b
         captured = 0;
 
         WideTrace trace;
-        trace.level = snapshot.level;
-        trace.voicing = snapshot.voicing;
-        trace.transient = snapshot.transient;
-        trace.sibilance = snapshot.sibilance;
         trace.correlation = snapshot.correlation;
-        trace.appliedWidth = snapshot.appliedWidth;
         trace.left = left[n];
         trace.right = right[n];
-        trace.bandWidth = bandWidths;
 
         int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
         fifo.prepareToWrite (1, start1, size1, start2, size2);

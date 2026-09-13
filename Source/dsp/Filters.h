@@ -2,7 +2,7 @@
     Wide Pocket - filters.
     Copyright (c) 2026 Rainline Music. All Rights Reserved.
 
-    The crossover used by Low Mono is deliberately complementary: the high band
+    The complementary crossover is deliberately reconstructed: the high band
     is derived as (input - lowBand), so low + high reconstructs the input
     exactly, sample for sample, with no magnitude ripple and no phase error.
     That property is what lets Wide Pocket keep a bit-transparent dry path.

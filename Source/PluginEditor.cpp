@@ -327,78 +327,6 @@ void ModernDial::paint (juce::Graphics& g)
 }
 
 // ---------------------------------------------------------------------------
-// EngineSelector
-// ---------------------------------------------------------------------------
-
-EngineSelector::EngineSelector (PocketLook& l) : look (l) {}
-
-void EngineSelector::setIndex (int newIndex, bool notify)
-{
-    const int clamped = juce::jlimit (0, names.size() - 1, newIndex);
-
-    if (clamped == index)
-        return;
-
-    index = clamped;
-    repaint();
-
-    if (notify && onChange)
-        onChange (index);
-}
-
-void EngineSelector::paint (juce::Graphics& g)
-{
-    auto r = getLocalBounds().toFloat();
-
-    g.setColour (look.pick (0xff050b13, 0xff111111, 0xffffffff));
-    g.fillRoundedRectangle (r, 12.0f);
-    g.setColour (look.pick (0xff304259, 0xff505050, 0xffbfc0c2));
-    g.drawRoundedRectangle (r, 12.0f, 1.0f);
-
-    text (g, "ENGINE", r.withHeight (26.0f).withTrimmedLeft (16.0f), 12.0f, look.muted(),
-          juce::Justification::centredLeft, look.isNeon() ? 0.075f : 0.0f);
-
-    auto row = r.withTrimmedTop (28.0f).reduced (10.0f, 8.0f);
-    const float cellWidth = row.getWidth() / float (names.size());
-
-    for (int i = 0; i < names.size(); ++i)
-    {
-        auto cell = row.withWidth (cellWidth).withX (row.getX() + cellWidth * float (i)).reduced (3.0f, 0.0f);
-        const bool active = i == index;
-
-        if (active)
-        {
-            const auto accent = look.isNeon() ? juce::Colour (0xff5987ff) : look.pick (0, 0xff3b3b3b, 0xffe4e4e4);
-
-            if (look.isNeon())
-            {
-                g.setColour (accent.withAlpha (0.16f));
-                g.fillRoundedRectangle (cell.expanded (2.0f), 9.0f);
-            }
-
-            g.setColour (accent.withAlpha (look.isNeon() ? 0.32f : 1.0f));
-            g.fillRoundedRectangle (cell, 8.0f);
-        }
-
-        g.setColour (look.pick (0xff34445b, 0xff555555, 0xffc2c3c6));
-        g.drawRoundedRectangle (cell, 8.0f, 0.8f);
-
-        text (g, names[i], cell, 13.0f, active ? look.ink() : look.muted(), juce::Justification::centred);
-    }
-}
-
-void EngineSelector::mouseDown (const juce::MouseEvent& event)
-{
-    auto row = getLocalBounds().toFloat().withTrimmedTop (28.0f).reduced (10.0f, 8.0f);
-
-    if (! row.contains (event.position))
-        return;
-
-    const float cellWidth = row.getWidth() / float (names.size());
-    setIndex (int ((event.position.x - row.getX()) / cellWidth), true);
-}
-
-// ---------------------------------------------------------------------------
 // Editor
 // ---------------------------------------------------------------------------
 
@@ -423,10 +351,8 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
 
     for (auto* c : std::initializer_list<juce::Component*> { &widthDial, &focusDial, &airDial, &stabilityDial,
                                                             &sibilanceDial, &transientDial, &outputDial,
-                                                            &settingsButton, &bypassButton, &drawerButton })
+                                                            &settingsButton, &bypassButton })
         addAndMakeVisible (c);
-
-    addChildComponent (engineSelector);
 
     widthAttach = std::make_unique<SliderAttachment> (p.parameters, "width", widthDial);
     focusAttach = std::make_unique<SliderAttachment> (p.parameters, "focus", focusDial);
@@ -437,43 +363,9 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
     outputAttach = std::make_unique<SliderAttachment> (p.parameters, "output", outputDial);
     outputDial.setDoubleClickReturnValue (true, 0.0);
 
-    drawerButton.onClick = [this] { setDrawerOpen (! drawerOpen); };
-
     bypassButton.setClickingTogglesState (true);
     bypassAttach = std::make_unique<ButtonAttachment> (p.parameters, "bypass", bypassButton);
     settingsButton.onClick = [this] { showSettingsMenu(); };
-
-    // Engine and Quality are choice parameters, so they are driven through
-    // ParameterAttachment rather than a slider attachment.
-    if (auto* engineParameter = p.parameters.getParameter ("engine"))
-    {
-        engineAttach = std::make_unique<juce::ParameterAttachment> (
-            *engineParameter,
-            [this] (float value) { engineSelector.setIndex ((int) value, false); });
-
-        engineSelector.onChange = [this] (int newIndex)
-        {
-            if (engineAttach != nullptr)
-                engineAttach->setValueAsCompleteGesture ((float) newIndex);
-        };
-
-        engineAttach->sendInitialUpdate();
-    }
-
-    if (auto* qualityParameter = p.parameters.getParameter ("quality"))
-    {
-        qualityAttach = std::make_unique<juce::ParameterAttachment> (
-            *qualityParameter,
-            [this] (float value)
-            {
-                // Quality is a setup decision, not a mix control, so it only
-                // appears in the gear menu now.
-                qualityLive = value < 0.5f;
-                repaint();
-            });
-
-        qualityAttach->sendInitialUpdate();
-    }
 
     widthDial.setTooltip ("Stereo spread of the synthesised Side signal. The mono sum never changes.");
     focusDial.setTooltip ("Keeps the intelligibility range of the voice centred while the rest spreads.");
@@ -484,9 +376,6 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
     outputDial.setTooltip ("Output gain. Double-click resets to 0 dB.");
     bypassButton.setTooltip ("Enable / bypass processing");
     settingsButton.setTooltip ("Settings");
-    drawerButton.setTooltip ("Engine choice and live analysis readouts");
-    engineSelector.setTooltip ("Adaptive parametric stereo controller. Version 0.1 uses deterministic vocal analysis; "
-                               "ML model support is prepared for a future update.");
 
     int width = p.editorWidth.load();
     if (width < 800 || width > 1500)
@@ -552,17 +441,12 @@ void WidePocketAudioProcessorEditor::setTheme (PocketTheme t, bool persist)
 
 void WidePocketAudioProcessorEditor::showSettingsMenu()
 {
-    juce::PopupMenu root, theme, quality;
+    juce::PopupMenu root, theme;
 
     theme.addItem (201, "Neon", true, look.theme == PocketTheme::Neon);
     theme.addItem (202, "Solid Dark", true, look.theme == PocketTheme::SolidDark);
     theme.addItem (203, "Solid White", true, look.theme == PocketTheme::SolidWhite);
 
-    quality.addItem (301, "Live (low latency)", true, qualityLive);
-    quality.addItem (302, "Studio (smoothest)", true, ! qualityLive);
-
-    root.addSubMenu ("Quality", quality);
-    root.addSeparator();
     root.addSubMenu ("Theme", theme);
 
     auto safe = juce::Component::SafePointer<WidePocketAudioProcessorEditor> (this);
@@ -578,9 +462,6 @@ void WidePocketAudioProcessorEditor::showSettingsMenu()
                                 safe->setTheme (PocketTheme::SolidDark);
                             else if (id == 203)
                                 safe->setTheme (PocketTheme::SolidWhite);
-                            else if (id == 301 || id == 302)
-                                if (safe->qualityAttach != nullptr)
-                                    safe->qualityAttach->setValueAsCompleteGesture (id == 301 ? 0.0f : 1.0f);
                         });
 }
 
@@ -657,9 +538,6 @@ void WidePocketAudioProcessorEditor::resized()
     sibilanceDial.setBounds (scaled (308, 440, 124, 126));
     transientDial.setBounds (scaled (448, 440, 124, 126));
 
-    drawerButton.setBounds (scaled (28, 586, 170, 30));
-    engineSelector.setBounds (scaled (44, 300, 300, 96));
-
     blurArea = scaled (12, 82, 936, 542);
     blurredSnapshot = {};
 
@@ -673,21 +551,15 @@ void WidePocketAudioProcessorEditor::resized()
 void WidePocketAudioProcessorEditor::timerCallback()
 {
     WideTrace trace;
-    bool updated = false;
 
     while (audioProcessor.popTrace (trace))
     {
         latest = trace;
-        updated = true;
 
         scatter[(std::size_t) scatterCursor] = { trace.left, trace.right };
         scatterCursor = (scatterCursor + 1) % (int) scatter.size();
         scatterFilled = juce::jmin ((int) scatter.size(), scatterFilled + 1);
     }
-
-    if (updated)
-        for (std::size_t band = 0; band < smoothedBands.size(); ++band)
-            smoothedBands[band] += 0.25f * (latest.bandWidth[band] - smoothedBands[band]);
 
     const bool bypassed = audioProcessor.displayBypass.load (std::memory_order_relaxed)
                           || bypassButton.getToggleState();
@@ -846,67 +718,6 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
                    4.0f, 4.0f);
 }
 
-void WidePocketAudioProcessorEditor::setDrawerOpen (bool shouldBeOpen)
-{
-    drawerOpen = shouldBeOpen;
-    engineSelector.setVisible (shouldBeOpen);
-    drawerButton.setButtonText (shouldBeOpen ? "Hide engine & analysis" : "Engine & analysis");
-
-    for (auto* dial : std::initializer_list<juce::Component*> { &airDial, &stabilityDial, &sibilanceDial, &transientDial })
-        dial->setVisible (! shouldBeOpen);
-
-    repaint();
-}
-
-void WidePocketAudioProcessorEditor::drawer (juce::Graphics& g, juce::Rectangle<float> box)
-{
-    g.setColour (look.pick (0xff0a1220, 0xff1b1b1b, 0xfffafafa));
-    g.fillRoundedRectangle (box, 12.0f);
-    g.setColour (look.pick (0xff304259, 0xff505050, 0xffbfc0c2));
-    g.drawRoundedRectangle (box, 12.0f, 1.0f);
-
-    text (g, "ENGINE", { box.getX() + 20.0f, box.getY() + 10.0f, 200.0f, 22.0f }, 11.0f, look.muted(),
-          juce::Justification::centredLeft, look.isNeon() ? 0.075f : 0.0f);
-
-    readouts (g, { box.getX() + 20.0f, box.getY() + 128.0f, box.getWidth() - 40.0f, 84.0f });
-}
-
-void WidePocketAudioProcessorEditor::readouts (juce::Graphics& g, juce::Rectangle<float> box)
-{
-    const bool glow = look.theme != PocketTheme::SolidWhite;
-    const float textGlow = glow ? 0.075f : 0.0f;
-
-    struct Entry { const char* name; float value; juce::String display; };
-
-    const juce::String correlation (latest.correlation, 2);
-
-    const Entry entries[] = {
-        { "APPLIED WIDTH", latest.appliedWidth, juce::String (juce::roundToInt (latest.appliedWidth * 100.0f)) + "%" },
-        { "COHERENCE", 0.5f * (latest.correlation + 1.0f), correlation },
-        { "VOICING", latest.voicing, juce::String (juce::roundToInt (latest.voicing * 100.0f)) + "%" },
-        { "SIBILANCE", latest.sibilance, juce::String (juce::roundToInt (latest.sibilance * 100.0f)) + "%" }
-    };
-
-    const float rowHeight = box.getHeight() / float (juce::numElementsInArray (entries));
-
-    for (int i = 0; i < juce::numElementsInArray (entries); ++i)
-    {
-        auto row = box.withHeight (rowHeight).withY (box.getY() + rowHeight * float (i)).reduced (0.0f, 4.0f);
-
-        text (g, entries[i].name, row.withWidth (150.0f), 11.0f, look.muted(), juce::Justification::centredLeft, textGlow);
-        text (g, entries[i].display, row.withTrimmedLeft (row.getWidth() - 70.0f), 13.0f, look.ink(),
-              juce::Justification::centredRight, textGlow);
-
-        auto bar = row.withTrimmedLeft (150.0f).withTrimmedRight (76.0f).withSizeKeepingCentre (row.getWidth() - 232.0f, 5.0f);
-        g.setColour (look.pick (0xff172334, 0xff343434, 0xffc9cacc));
-        g.fillRoundedRectangle (bar, 2.5f);
-
-        const auto accent = look.isNeon() ? juce::Colour (0xff5987ff) : look.pick (0, 0xffd0d0d0, 0xff3a3c40);
-        g.setColour (accent);
-        g.fillRoundedRectangle (bar.withWidth (juce::jmax (2.0f, bar.getWidth() * juce::jlimit (0.0f, 1.0f, entries[i].value))), 2.5f);
-    }
-}
-
 void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
 {
     const float s = float (getWidth()) / 960.0f;
@@ -922,8 +733,6 @@ void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
 
     vectorScope (g, scaled (24, 96, 556, 330).toFloat());
 
-    if (drawerOpen)
-        drawer (g, scaled (24, 282, 556, 290).toFloat());
 }
 
 void WidePocketAudioProcessorEditor::paintOverChildren (juce::Graphics& g)

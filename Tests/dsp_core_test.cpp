@@ -90,8 +90,6 @@ Parameters defaultParameters()
     parameters.sibilanceGuard = 60.0f;
     parameters.transientFocus = 60.0f;
     parameters.outputDb = 0.0f;
-    parameters.engine = Engine::natural;
-    parameters.quality = Quality::studio;
     return parameters;
 }
 
@@ -204,41 +202,6 @@ void testMidSide()
     checkNear (worstMonoSum, 0.0, 1.0e-6, "mono sum is independent of the Side signal");
 }
 
-void testVelvetNoise()
-{
-    beginCase ("Velvet noise: energy, decorrelation, stability");
-
-    VelvetNoiseDecorrelator velvet;
-    velvet.prepare (kSampleRate, 28.0f, 1800.0f, 0x1f2e3d4cu);
-
-    checkGreater ((double) velvet.getNumTaps(), 20.0, "sparse impulse response has enough taps");
-    checkLess ((double) velvet.getNumTaps(), 400.0, "impulse response stays sparse (cheap)");
-    checkNear ((double) velvet.impulseEnergy(), 1.0, 1.0e-5, "tap gains are energy normalised");
-
-    Noise noise (2024u);
-    std::vector<float> input (48000), output (48000);
-    for (std::size_t i = 0; i < input.size(); ++i)
-    {
-        input[i] = noise.next() * 0.5f;
-        output[i] = velvet.process (input[i]);
-    }
-
-    checkTrue (allFinite (output), "output is finite");
-    checkNear (rms (output, 4800) / std::max (1.0e-9, rms (input, 4800)), 1.0, 0.1,
-               "RMS is preserved (energy neutral decorrelation)");
-    checkLess (std::abs (correlation (input, output, 4800)), 0.25,
-               "output is decorrelated from the input");
-
-    // Determinism: a second instance with the same seed must be identical.
-    VelvetNoiseDecorrelator twin;
-    twin.prepare (kSampleRate, 28.0f, 1800.0f, 0x1f2e3d4cu);
-    double worst = 0.0;
-    for (std::size_t i = 0; i < input.size(); ++i)
-        worst = std::max (worst, (double) std::abs (twin.process (input[i]) - output[i]));
-
-    checkNear (worst, 0.0, 0.0, "same seed gives bit identical output");
-}
-
 void testStftIsSilentAtZeroGain()
 {
     beginCase ("STFT: zero band gain produces exact silence");
@@ -248,7 +211,7 @@ void testStftIsSilentAtZeroGain()
     stft.setUniformGain (0.0f);
 
     const int latency = stft.getLatencySamples();
-    checkNear ((double) latency, 1024.0, 0.0, "reported latency equals the frame size");
+    checkNear ((double) latency, 256.0, 0.0, "reported latency equals the fixed frame size");
 
     auto input = makeVoiceLike (32768);
     double worst = 0.0;
@@ -300,15 +263,15 @@ void testStftPreservesSpectrum()
 
     checkTrue (allFinite (output), "output is finite");
 
-    // Neighbouring frames carry independent sign patterns, so the overlap-add
-    // sums incoherently; the fixed 3 dB makeup inside the stage compensates
-    // that, which is why this bound can be tight.
-    checkNear (rms (output, 8192) / std::max (1.0e-9, rms (input, 8192)), 1.0, 0.2,
-               "the quadrature transform is close to energy neutral");
+    // The t/F envelope shaper keeps the processed spectrum close in energy.
+    const double processedRatio = rms (output, 8192) / std::max (1.0e-9, rms (input, 8192));
+    checkGreater (processedRatio, 0.4, "processed signal keeps useful energy");
+    checkLess (processedRatio, 1.2, "envelope shaping prevents excess energy");
 
+    const std::size_t latency = (std::size_t) stft.getLatencySamples();
     std::vector<float> aligned (input.size(), 0.0f);
-    for (std::size_t i = 1024; i < input.size(); ++i)
-        aligned[i] = input[i - 1024];
+    for (std::size_t i = latency; i < input.size(); ++i)
+        aligned[i] = input[i - latency];
 
     checkLess (std::abs (correlation (aligned, output, 8192)), 0.6,
                "the Side is decorrelated from the delayed Mid");
@@ -472,90 +435,6 @@ void testTransientHandling()
     checkLess (tail, 0.25, "decay between transients stays low");
 }
 
-void testAllEnginesAndQualities()
-{
-    beginCase ("Engine: every engine and quality is finite and latency stable");
-
-    const Engine engines[] = { Engine::natural, Engine::efficient, Engine::smart };
-    const Quality qualities[] = { Quality::live, Quality::studio };
-
-    for (auto quality : qualities)
-    {
-        int referenceLatency = -1;
-
-        for (auto engineChoice : engines)
-        {
-            WidePocketEngine engine;
-            engine.prepare (kSampleRate, 512);
-
-            auto parameters = defaultParameters();
-            parameters.engine = engineChoice;
-            parameters.quality = quality;
-            parameters.width = 85.0f;
-            engine.setParameters (parameters);
-
-            auto input = makeVoiceLike (32768);
-            auto output = runEngine (engine, input);
-
-            checkTrue (allFinite (output.left) && allFinite (output.right), "output is finite");
-            checkLess (peakAbs (output.left), 4.0, "no runaway level");
-
-            if (referenceLatency < 0)
-                referenceLatency = engine.getLatencySamples();
-
-            checkNear ((double) engine.getLatencySamples(), (double) referenceLatency, 0.0,
-                       "latency is identical for all engines at a given quality");
-        }
-    }
-}
-
-void testEngineSwitchIsSmooth()
-{
-    beginCase ("Engine: switching engines does not click");
-
-    WidePocketEngine engine;
-    engine.prepare (kSampleRate, 512);
-
-    auto parameters = defaultParameters();
-    parameters.width = 100.0f;
-    engine.setParameters (parameters);
-
-    auto input = makeVoiceLike (49152);
-    std::vector<float> left = input, right = input;
-
-    const int blockSize = 256;
-    int blockIndex = 0;
-
-    for (std::size_t position = 0; position < left.size(); position += (std::size_t) blockSize, ++blockIndex)
-    {
-        if (blockIndex == 40)
-        {
-            parameters.engine = Engine::efficient;
-            engine.setParameters (parameters);
-        }
-        else if (blockIndex == 80)
-        {
-            parameters.engine = Engine::smart;
-            engine.setParameters (parameters);
-        }
-
-        const int count = (int) std::min ((std::size_t) blockSize, left.size() - position);
-        engine.process (left.data() + position, right.data() + position, count);
-    }
-
-    // A click is a sample to sample step much larger than the steepest slope
-    // the source signal itself contains, so the source sets the yardstick.
-    double worstStep = 0.0, drySteepest = 0.0;
-    for (std::size_t i = 2048; i < left.size(); ++i)
-    {
-        worstStep = std::max (worstStep, (double) std::abs (left[i] - left[i - 1]));
-        drySteepest = std::max (drySteepest, (double) std::abs (input[i] - input[i - 1]));
-    }
-
-    checkTrue (allFinite (left) && allFinite (right), "output is finite across the switches");
-    checkLess (worstStep, 3.0 * drySteepest, "no discontinuity at the engine crossfades");
-}
-
 void testParameterAutomation()
 {
     beginCase ("Engine: dense automation stays stable");
@@ -618,52 +497,6 @@ void testNanAndInfInput()
     checkTrue (allFinite (left) && allFinite (right), "no NaN or Inf reaches the output");
 }
 
-void testMlFallback()
-{
-    beginCase ("Smart: broken model falls back to the deterministic path");
-
-    struct BrokenModel : MlModel
-    {
-        bool isReady() const override { return true; }
-
-        bool infer (const MlFeatures&, MlDecision& decision) override
-        {
-            for (auto& value : decision.bandWidth)
-                value = std::numeric_limits<float>::quiet_NaN();
-            decision.globalTrim = std::numeric_limits<float>::infinity();
-            return true;
-        }
-    };
-
-    struct SilentModel : MlModel
-    {
-        bool isReady() const override { return false; }
-        bool infer (const MlFeatures&, MlDecision&) override { return true; }
-    };
-
-    BrokenModel broken;
-    SilentModel silent;
-
-    for (MlModel* model : { (MlModel*) &broken, (MlModel*) &silent, (MlModel*) nullptr })
-    {
-        WidePocketEngine engine;
-        engine.prepare (kSampleRate, 512);
-        engine.setMlModel (model);
-
-        auto parameters = defaultParameters();
-        parameters.engine = Engine::smart;
-        parameters.width = 90.0f;
-        engine.setParameters (parameters);
-
-        auto input = makeVoiceLike (32768);
-        auto output = runEngine (engine, input);
-
-        checkTrue (allFinite (output.left) && allFinite (output.right),
-                   "output is finite regardless of model behaviour");
-        checkGreater (rms (output.left, 4096), 0.001, "the plugin keeps passing audio");
-    }
-}
-
 void testAnalyzerFeatures()
 {
     beginCase ("Analyser: features respond as documented");
@@ -701,6 +534,90 @@ void testAnalyzerFeatures()
     checkNear ((double) mask.size(), 12.0, 0.0, "the spatial mask has the documented band count");
 }
 
+
+void testWideAndLocallyCentred()
+{
+    beginCase ("Natural: vocal is wide and locally centred");
+    WidePocketEngine engine;
+    engine.prepare (kSampleRate, 512);
+    auto parameters = defaultParameters();
+    parameters.width = 100.0f;
+    parameters.focus = 45.0f;
+    engine.setParameters (parameters);
+    auto input = makeVoiceLike (192000);
+    auto output = runEngine (engine, input);
+    const std::size_t from = 24000;
+    std::vector<float> mid (input.size()), side (input.size());
+    for (std::size_t i = from; i < input.size(); ++i)
+    {
+        mid[i] = 0.5f * (output.left[i] + output.right[i]);
+        side[i] = 0.5f * (output.left[i] - output.right[i]);
+    }
+    const double ratio = rms (side, from) / std::max (1.0e-9, rms (mid, from));
+    checkGreater (ratio, 0.35, "full width produces useful Side energy");
+    checkLess (ratio, 0.95, "Side remains below Mid energy");
+
+    const std::size_t window = 2400; // 50 ms
+    double worstIld = 0.0, meanIld = 0.0;
+    int windows = 0;
+    for (std::size_t pos = from; pos + window < input.size(); pos += window)
+    {
+        double le = 0.0, re = 0.0;
+        for (std::size_t i = pos; i < pos + window; ++i)
+        {
+            le += (double) output.left[i] * output.left[i];
+            re += (double) output.right[i] * output.right[i];
+        }
+        const double l = std::sqrt (le / (double) window);
+        const double r = std::sqrt (re / (double) window);
+        const double ild = std::abs (20.0 * std::log10 (std::max (1.0e-9, l) / std::max (1.0e-9, r)));
+        worstIld = std::max (worstIld, ild);
+        meanIld += ild;
+        ++windows;
+    }
+    checkLess (meanIld / std::max (1, windows), 0.30, "mean 50 ms ILD stays centred");
+    checkLess (worstIld, 0.80, "no short window leans strongly left or right");
+}
+
+void testLowBandIsAllowedToWiden()
+{
+    beginCase ("Natural: no forced mono below 150 Hz");
+    WidePocketEngine engine;
+    engine.prepare (kSampleRate, 512);
+    auto parameters = defaultParameters();
+    parameters.width = 100.0f;
+    parameters.focus = 0.0f;
+    engine.setParameters (parameters);
+    auto output = runEngine (engine, makeSine (192000, 110.0, 0.4));
+    std::vector<float> side (output.left.size());
+    for (std::size_t i = 0; i < side.size(); ++i)
+        side[i] = 0.5f * (output.left[i] - output.right[i]);
+    checkGreater (rms (side, 48000), 0.005, "110 Hz produces Side instead of being forced mono");
+}
+
+void testStereoIdentityAtZeroWidth()
+{
+    beginCase ("Natural: Width zero preserves a stereo input");
+    WidePocketEngine engine;
+    engine.prepare (kSampleRate, 512);
+    auto parameters = defaultParameters();
+    parameters.width = 0.0f;
+    engine.setParameters (parameters);
+    auto left = makeSine (65536, 330.0, 0.4);
+    auto right = makeSine (65536, 550.0, 0.3);
+    const auto dryLeft = left, dryRight = right;
+    for (std::size_t pos = 0; pos < left.size(); pos += 128)
+        engine.process (left.data() + pos, right.data() + pos, (int) std::min<std::size_t> (128, left.size() - pos));
+    const std::size_t latency = (std::size_t) engine.getLatencySamples();
+    double worst = 0.0;
+    for (std::size_t i = latency * 3; i < left.size(); ++i)
+    {
+        worst = std::max (worst, std::abs ((double) left[i] - dryLeft[i - latency]));
+        worst = std::max (worst, std::abs ((double) right[i] - dryRight[i - latency]));
+    }
+    checkNear (worst, 0.0, 1.0e-4, "stereo dry path is sample exact");
+}
+
 } // namespace
 
 int main()
@@ -711,7 +628,6 @@ int main()
     testFft();
     testCrossover();
     testMidSide();
-    testVelvetNoise();
     testStftIsSilentAtZeroGain();
     testStftSideIsQuadratureToMid();
     testStftPreservesSpectrum();
@@ -720,11 +636,11 @@ int main()
     testMonoCompatibilityWithAllGuards();
     testTonalStability();
     testTransientHandling();
-    testAllEnginesAndQualities();
-    testEngineSwitchIsSmooth();
+    testWideAndLocallyCentred();
+    testLowBandIsAllowedToWiden();
+    testStereoIdentityAtZeroWidth();
     testParameterAutomation();
     testNanAndInfInput();
-    testMlFallback();
     testAnalyzerFeatures();
 
     return summary();

@@ -53,27 +53,6 @@ private:
     int decimals;
 };
 
-/** Three position Engine switch, drawn in the same style as the dials. */
-class EngineSelector final : public juce::Component,
-                            public juce::SettableTooltipClient
-{
-public:
-    explicit EngineSelector (PocketLook&);
-
-    std::function<void (int)> onChange;
-
-    void setIndex (int newIndex, bool notify);
-    int getIndex() const noexcept { return index; }
-
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-
-private:
-    PocketLook& look;
-    int index = 0;
-    const juce::StringArray names { "Natural", "Efficient", "Smart" };
-};
-
 class WidePocketAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                             private juce::Timer
 {
@@ -97,9 +76,6 @@ private:
 
     void panel (juce::Graphics&, juce::Rectangle<float>);
     void vectorScope (juce::Graphics&, juce::Rectangle<float>);
-    void drawer (juce::Graphics&, juce::Rectangle<float>);
-    void readouts (juce::Graphics&, juce::Rectangle<float>);
-    void setDrawerOpen (bool);
     juce::Rectangle<int> scaled (float, float, float, float) const;
 
     WidePocketAudioProcessor& audioProcessor;
@@ -113,32 +89,20 @@ private:
     ModernDial transientDial { look, "Transient", "Focus", "%", 0xff5987ff, true };
     ModernDial outputDial { look, "Output", "dB", "dB", 0xfff1e84b, true, 2 };
 
-    EngineSelector engineSelector { look };
-
     juce::TextButton settingsButton { "settings" }, bypassButton { "power" };
-
-    // Engine and the analysis readouts live behind this arrow, the same way
-    // the Sidechain drawer works in Phase Pocket. They are development
-    // instruments, not everyday controls.
-    juce::TextButton drawerButton { "Engine & analysis" };
 
     std::unique_ptr<SliderAttachment> widthAttach, focusAttach, airAttach, stabilityAttach,
         sibilanceAttach, transientAttach, outputAttach;
     std::unique_ptr<ButtonAttachment> bypassAttach;
-    std::unique_ptr<juce::ParameterAttachment> engineAttach, qualityAttach;
 
     std::unique_ptr<juce::PropertiesFile> preferences;
 
     WideTrace latest {};
-    std::array<float, wp::VocalAnalyzer::numMaskBands> smoothedBands {};
 
     // ~170 ms of history at the 12 kHz point rate: long enough to read as a
     // cloud, short enough to react immediately.
     std::array<juce::Point<float>, 2048> scatter {};
     int scatterCursor = 0, scatterFilled = 0;
-
-    bool drawerOpen = false;
-    bool qualityLive = false;
 
     bool ready = false, capturingBlur = false, bypassTarget = false;
     float bypassMix = 0.0f;

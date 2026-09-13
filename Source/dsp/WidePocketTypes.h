@@ -17,19 +17,6 @@ namespace wp
 
 inline constexpr double kPi = 3.14159265358979323846;
 
-enum class Engine
-{
-    natural = 0,   // STFT sub-band all-pass decorrelation
-    efficient = 1, // sparse velvet-noise FIR decorrelation
-    smart = 2      // adaptive parametric stereo controller
-};
-
-enum class Quality
-{
-    live = 0,  // short STFT frames, low latency
-    studio = 1 // long STFT frames, highest quality
-};
-
 /** User-facing parameter set, in user units. */
 struct Parameters
 {
@@ -39,10 +26,7 @@ struct Parameters
     float stability = 50.0f;       // 0 .. 100 %
     float sibilanceGuard = 60.0f;  // 0 .. 100 %
     float transientFocus = 60.0f;  // 0 .. 100 %
-    float outputDb = 0.0f;         // -12 .. +12 dB
-
-    Engine engine = Engine::natural;
-    Quality quality = Quality::studio;
+    float outputDb = 0.0f;         // -24 .. +12 dB
 };
 
 /*
@@ -52,10 +36,8 @@ struct Parameters
 
       - the Mid path is always a pure delay, so the mono sum is always exactly
         the dry signal. "Mono safe" is structural and cannot be switched off.
-      - the synthesised Side is built in quadrature to the Mid, so the
-        inter-channel level difference is zero by construction. "Center lock"
-        is structural too, and because nothing has to be measured and
-        corrected, the image cannot wander.
+      - the synthesised Side is decorrelated and spectrally orthogonalised to
+        the Mid before synthesis, so no time-domain panning servo is needed.
       - the Side never adds broadband level to the sum, so there is nothing
         for an auto gain stage to chase.
 */
