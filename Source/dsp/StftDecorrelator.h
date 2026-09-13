@@ -27,14 +27,22 @@ namespace wp
     no echo, group delay bounded to a few tens of samples, the mono sum
     untouched, and nothing left that can ring.
 
-    The rotation is centred on quadrature (+90 degrees) and only wanders a
+    The rotation sits on quadrature (+-90 degrees) and only wanders a
     bounded amount around it. That matters: the band orthogonalisation below
     removes whatever part of the candidate is in phase with the Mid, so a
     rotation that sits near 0 degrees in any region of the spectrum would
     leave almost no Side there. Quadrature is the point where the candidate
-    is already orthogonal to the Mid, so the full magnitude survives, while
-    the bounded wander across bins is what keeps the two channels from
-    being a plain Hilbert copy of each other. */
+    is already orthogonal to the Mid, so the full magnitude survives.
+
+    The sign of that quadrature alternates across small groups of bins.
+    Using +90 degrees everywhere keeps the energy but makes the Side a plain
+    Hilbert transform of the Mid, and a Hilbert copy with a consistent sign
+    pushes the short term image off centre (it measured 0.6 dB of average
+    50 ms level difference and 1.8 dB of gain on a held tone). Alternating
+    the sign leaves every bin orthogonal to the Mid while cancelling that
+    systematic lean, and grouping the flips (rather than flipping every bin)
+    keeps neighbouring bins coherent enough that the Side does not cancel
+    itself inside a band. */
 class StftDecorrelator
 {
 public:
@@ -199,24 +207,31 @@ private:
         transientActive = holdFrames > 0;
     }
 
-    /* A frozen bounded random walk around quadrature. The per bin step and
-       the total excursion are both bounded, so the equivalent impulse
-       response stays inside a small part of the analysis window (a few tens
-       of samples of group delay at 48 kHz) and cannot smear transients or
-       build a tail, while still being different enough across frequency to
+    /* A frozen bounded random walk around quadrature, with the sign of the
+       quadrature re-drawn every signFlipBins bins. The per bin step and the
+       total excursion are both bounded, so the equivalent impulse response
+       stays inside a small part of the analysis window (a few tens of
+       samples of group delay at 48 kHz) and cannot smear transients or build
+       a tail, while still being different enough across frequency to
        decorrelate. */
     void buildRotationTable()
     {
         rotation.assign ((size_t) numBins, { 0.0f, 1.0f });
         std::uint32_t state = 0x9e3779b9u;
         float deviation = 0.0f;
+        bool positive = true;
 
         for (int b = 0; b < numBins; ++b)
         {
             state = state * 1664525u + 1013904223u;
             const float uniform = (float) ((state >> 8) & 0xffffffu) / (float) 0xffffff - 0.5f;
             deviation = clampf (deviation + 2.0f * maxPhaseStep * uniform, -maxDeviation, maxDeviation);
-            rotation[(size_t) b] = std::polar (1.0f, 0.5f * (float) kPi + deviation);
+
+            if (b % signFlipBins == 0)
+                positive = ((state >> 23) & 1u) != 0u;
+
+            const float sign = positive ? 1.0f : -1.0f;
+            rotation[(size_t) b] = std::polar (1.0f, sign * (0.5f * (float) kPi + deviation));
         }
     }
 
@@ -232,7 +247,8 @@ private:
     }
 
     static constexpr float maxPhaseStep = 0.45f;
-    static constexpr float maxDeviation = 0.9f;
+    static constexpr float maxDeviation = 0.5f;
+    static constexpr int signFlipBins = 7;
 
     double sampleRate = 48000.0;
     int fftSize = 256, hopSize = 128, numBins = 129;
