@@ -96,9 +96,10 @@ private:
     void saveSize();
 
     void panel (juce::Graphics&, juce::Rectangle<float>);
-    void spectrumView (juce::Graphics&, juce::Rectangle<float>);
-    void goniometer (juce::Graphics&, juce::Rectangle<float>);
+    void vectorScope (juce::Graphics&, juce::Rectangle<float>);
+    void drawer (juce::Graphics&, juce::Rectangle<float>);
     void readouts (juce::Graphics&, juce::Rectangle<float>);
+    void setDrawerOpen (bool);
     juce::Rectangle<int> scaled (float, float, float, float) const;
 
     WidePocketAudioProcessor& audioProcessor;
@@ -106,9 +107,8 @@ private:
 
     ModernDial widthDial { look, "Width", "Stereo spread", "%", 0xff5987ff };
     ModernDial focusDial { look, "Focus", "Intelligibility", "%", 0xff32d4cb };
-    ModernDial airDial { look, "Air", "High shelf", "%", 0xfff1e84b, true };
+    ModernDial airDial { look, "Air", "Top octaves", "%", 0xfff1e84b, true };
     ModernDial stabilityDial { look, "Stability", "Adaptation", "%", 0xff5987ff, true };
-    ModernDial lowMonoDial { look, "Low Mono", "Crossover", "Hz", 0xff32d4cb, true };
     ModernDial sibilanceDial { look, "Sibilance", "Guard", "%", 0xfff1e84b, true };
     ModernDial transientDial { look, "Transient", "Focus", "%", 0xff5987ff, true };
     ModernDial outputDial { look, "Output", "dB", "dB", 0xfff1e84b, true, 2 };
@@ -116,20 +116,29 @@ private:
     EngineSelector engineSelector { look };
 
     juce::TextButton settingsButton { "settings" }, bypassButton { "power" };
-    juce::TextButton qualityButton { "Studio" };
-    juce::ToggleButton monoSafeButton { "Mono Safe" }, centerLockButton { "Center Lock" }, autoGainButton { "Auto Gain" };
+
+    // Engine and the analysis readouts live behind this arrow, the same way
+    // the Sidechain drawer works in Phase Pocket. They are development
+    // instruments, not everyday controls.
+    juce::TextButton drawerButton { "Engine & analysis" };
 
     std::unique_ptr<SliderAttachment> widthAttach, focusAttach, airAttach, stabilityAttach,
-        lowMonoAttach, sibilanceAttach, transientAttach, outputAttach;
-    std::unique_ptr<ButtonAttachment> bypassAttach, monoSafeAttach, centerLockAttach, autoGainAttach;
+        sibilanceAttach, transientAttach, outputAttach;
+    std::unique_ptr<ButtonAttachment> bypassAttach;
     std::unique_ptr<juce::ParameterAttachment> engineAttach, qualityAttach;
 
     std::unique_ptr<juce::PropertiesFile> preferences;
 
     WideTrace latest {};
     std::array<float, wp::VocalAnalyzer::numMaskBands> smoothedBands {};
-    std::array<juce::Point<float>, 1024> scatter {};
+
+    // ~170 ms of history at the 12 kHz point rate: long enough to read as a
+    // cloud, short enough to react immediately.
+    std::array<juce::Point<float>, 2048> scatter {};
     int scatterCursor = 0, scatterFilled = 0;
+
+    bool drawerOpen = false;
+    bool qualityLive = false;
 
     bool ready = false, capturingBlur = false, bypassTarget = false;
     float bypassMix = 0.0f;
