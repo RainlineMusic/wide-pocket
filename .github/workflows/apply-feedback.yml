@@ -4,7 +4,7 @@ on:
   push:
     branches: [feature/natural-v2]
     paths:
-      - '.automation/feedback.patch.xz.b64'
+      - '.automation/**'
       - '.github/workflows/apply-feedback.yml'
 
 permissions:
