@@ -1,5 +1,5 @@
 /*
-    Wide Pocket - single Natural vocal widening engine (v0.3).
+    Wide Pocket - single Natural vocal widening engine (v0.4).
     Copyright (c) 2026 Rainline Music. All Rights Reserved.
 
     Every control below is a real gain on the quadrature Side, so none of them
@@ -10,7 +10,7 @@
 #include "DelayLine.h"
 #include "Guards.h"
 #include "MidSideRenderer.h"
-#include "StftDecorrelator.h"
+#include "QuadratureFir.h"
 #include "VocalAnalyzer.h"
 #include "WidePocketTypes.h"
 
@@ -28,7 +28,7 @@ public:
     {
         sampleRate = std::max (8000.0, sr);
         analyzer.prepare (sampleRate);
-        decorrelator.prepare (sampleRate, 8);
+        decorrelator.prepare (sampleRate);
         latencySamples = decorrelator.getLatencySamples();
         midDelay.prepare (latencySamples + 8);
         sideDelay.prepare (latencySamples + 8);
@@ -81,6 +81,9 @@ public:
             if (analyzer.pushSample (ms.mid))
                 updatePerHop();
 
+            // The onset amount is a continuous, per-sample envelope feature,
+            // so the duck moves like a compressor rather than switching.
+            decorrelator.setTransientAmount (analyzer.getFrame().transient * 1.5f);
             const float generated = decorrelator.process (ms.mid);
             const float mid = midDelay.process (ms.mid);
             const float side = sideDelay.process (ms.side) + guardSmoother.next() * generated;
@@ -117,7 +120,7 @@ private:
         // Focus notch and the sibilance band gain take level out of the Side,
         // so the middle of the Width range has to start higher to stay as wide
         // as the old build felt.
-        const float base = 1.15f * std::pow (width, 0.55f);
+        const float base = 1.28f * std::pow (width, 0.55f);
         const auto& mask = analyzer.getSpatialMask();
 
         float sum = 0.0f, weights = 0.0f;
@@ -158,7 +161,7 @@ private:
             const float tonal = lerp (0.93f, 1.0f, clamp01 (mask[(size_t) b] * 3.0f));
 
             const float gain = clampf (base * focusGain * airGain * low * sibGain * tonal,
-                                       0.0f, StftDecorrelator::maxBandGain);
+                                       0.0f, QuadratureFir::maxBandGain);
             bandWidths[(size_t) b] = gain;
 
             const float weight = centre < 6000.0f ? 1.0f : 0.5f;
@@ -169,9 +172,9 @@ private:
         decorrelator.setBandGains (bandWidths);
         averageBandGain = sum / std::max (1.0f, weights);
 
-        // Transient drives the smooth onset duck inside the decorrelator
-        // instead of a fixed hard gate, so the control is audible and the Side
-        // no longer stops dead.
+        // Transient drives the smooth onset duck inside the FIR stage instead
+        // of a fixed hard gate, so the control is audible and the Side no
+        // longer stops dead.
         const float transientAmount = clamp01 (parameters.transientFocus * 0.01f);
         decorrelator.setDuckDepth (0.9f * transientAmount);
 
@@ -186,10 +189,10 @@ private:
     }
 
     double sampleRate = 48000.0;
-    int latencySamples = 256;
+    int latencySamples = 127;
     Parameters parameters;
     VocalAnalyzer analyzer;
-    StftDecorrelator decorrelator;
+    QuadratureFir decorrelator;
     DelayLine midDelay, sideDelay;
     MidSideRenderer renderer;
     CorrelationGuard correlationGuard;
