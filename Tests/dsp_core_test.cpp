@@ -87,15 +87,11 @@ Parameters defaultParameters()
     parameters.focus = 50.0f;
     parameters.air = 40.0f;
     parameters.stability = 50.0f;
-    parameters.lowMonoHz = 180.0f;
     parameters.sibilanceGuard = 60.0f;
     parameters.transientFocus = 60.0f;
     parameters.outputDb = 0.0f;
     parameters.engine = Engine::natural;
     parameters.quality = Quality::studio;
-    parameters.monoSafe = true;
-    parameters.centerLock = true;
-    parameters.autoGain = true;
     return parameters;
 }
 
@@ -243,37 +239,59 @@ void testVelvetNoise()
     checkNear (worst, 0.0, 0.0, "same seed gives bit identical output");
 }
 
-void testStftIsPureDelayAtZeroDepth()
+void testStftIsSilentAtZeroGain()
 {
-    beginCase ("STFT: zero depth is a pure delay (perfect reconstruction)");
+    beginCase ("STFT: zero band gain produces exact silence");
 
     StftDecorrelator stft;
     stft.prepare (kSampleRate, 10);
-    stft.setUniformDepth (0.0f);
+    stft.setUniformGain (0.0f);
 
     const int latency = stft.getLatencySamples();
     checkNear ((double) latency, 1024.0, 0.0, "reported latency equals the frame size");
 
     auto input = makeVoiceLike (32768);
-    std::vector<float> output (input.size(), 0.0f);
-    for (std::size_t i = 0; i < input.size(); ++i)
-        output[i] = stft.process (input[i]);
-
-    // Compare the aligned region, skipping the overlap-add ramp up.
     double worst = 0.0;
-    for (std::size_t i = (std::size_t) latency * 3; i < input.size(); ++i)
-        worst = std::max (worst, (double) std::abs (output[i] - input[i - (std::size_t) latency]));
+    for (std::size_t i = 0; i < input.size(); ++i)
+        worst = std::max (worst, (double) std::abs (stft.process (input[i])));
 
-    checkNear (worst, 0.0, 1.0e-4, "output == input delayed by exactly the reported latency");
+    // This is what makes Width = 0 an exact null: no Side is generated at all.
+    checkNear (worst, 0.0, 1.0e-6, "no Side signal is generated");
+}
+
+void testStftSideIsQuadratureToMid()
+{
+    beginCase ("STFT: the Side is in quadrature to the Mid (structurally centred)");
+
+    StftDecorrelator stft;
+    stft.prepare (kSampleRate, 10);
+    stft.setUniformGain (1.0f);
+
+    const std::size_t latency = (std::size_t) stft.getLatencySamples();
+    auto input = makeVoiceLike (131072);
+
+    std::vector<float> side (input.size(), 0.0f);
+    for (std::size_t i = 0; i < input.size(); ++i)
+        side[i] = stft.process (input[i]);
+
+    std::vector<float> mid (input.size(), 0.0f);
+    for (std::size_t i = latency; i < input.size(); ++i)
+        mid[i] = input[i - latency];
+
+    // The inter-channel level difference of L = M + S, R = M - S is exactly
+    // 4 * E[M * S], so a zero Mid/Side correlation means a centred image for
+    // every possible band gain. This is the core invariant of the design.
+    checkLess (std::abs (correlation (mid, side, latency * 3)), 0.05,
+               "Mid and Side are uncorrelated, so there is no level difference");
 }
 
 void testStftPreservesSpectrum()
 {
-    beginCase ("STFT: full rotation preserves magnitude and decorrelates");
+    beginCase ("STFT: the Side keeps the spectrum of the Mid");
 
     StftDecorrelator stft;
     stft.prepare (kSampleRate, 10);
-    stft.setUniformDepth (1.0f);
+    stft.setUniformGain (1.0f);
 
     auto input = makeVoiceLike (65536);
     std::vector<float> output (input.size(), 0.0f);
@@ -282,18 +300,18 @@ void testStftPreservesSpectrum()
 
     checkTrue (allFinite (output), "output is finite");
 
-    // Overlap-add of phase rotated frames sums incoherently where the frames
-    // overlap, which costs a little over 1 dB. That is expected and is what
-    // Auto Gain compensates downstream, so the bound here is ~1.5 dB.
+    // Neighbouring frames carry independent sign patterns, so the overlap-add
+    // sums incoherently; the fixed 3 dB makeup inside the stage compensates
+    // that, which is why this bound can be tight.
     checkNear (rms (output, 8192) / std::max (1.0e-9, rms (input, 8192)), 1.0, 0.2,
-               "all-pass rotation is close to energy neutral");
+               "the quadrature transform is close to energy neutral");
 
     std::vector<float> aligned (input.size(), 0.0f);
     for (std::size_t i = 1024; i < input.size(); ++i)
         aligned[i] = input[i - 1024];
 
     checkLess (std::abs (correlation (aligned, output, 8192)), 0.6,
-               "rotated signal is decorrelated from the delayed input");
+               "the Side is decorrelated from the delayed Mid");
 }
 
 void testWidthZeroIsNull()
@@ -333,9 +351,6 @@ void testMonoCompatibility()
 
     auto parameters = defaultParameters();
     parameters.width = 100.0f;
-    parameters.autoGain = false;
-    parameters.centerLock = false;
-    parameters.monoSafe = true;
     engine.setParameters (parameters);
 
     auto input = makeVoiceLike (65536);
@@ -364,7 +379,7 @@ void testMonoCompatibility()
 
 void testMonoCompatibilityWithAllGuards()
 {
-    beginCase ("Engine: mono fold down with Center Lock and Auto Gain engaged");
+    beginCase ("Engine: loudness and mono fold down at full width");
 
     WidePocketEngine engine;
     engine.prepare (kSampleRate, 512);
@@ -391,12 +406,11 @@ void testMonoCompatibilityWithAllGuards()
 
     const double dryRms = std::max (1.0e-9, rms (dry, from));
 
-    // Auto Gain matches the *stereo* loudness to the dry signal.
     checkNear (20.0 * std::log10 (rms (stereo, from) / dryRms), 0.0, 1.0,
                "stereo loudness stays within 1 dB of the dry signal");
 
-    // The mono fold down therefore sits slightly lower, because the Side energy
-    // that Auto Gain accounted for disappears when the channels are summed.
+    // The mono fold down sits slightly lower, because the Side energy
+    // disappears when the channels are summed.
     checkNear (20.0 * std::log10 (rms (monoSum, from) / dryRms), 0.0, 2.0,
                "mono fold down stays within 2 dB of the dry signal");
     checkGreater (correlation (monoSum, dry, from), 0.99,
@@ -417,7 +431,7 @@ void testTonalStability()
     auto input = makeSine (65536, 440.0, 0.5);
     auto output = runEngine (engine, input);
 
-    const std::size_t from = 24000; // half a second, so Center Lock has settled
+    const std::size_t from = 24000;
 
     const double inputRms = rms (input, from);
     const double leftRms = rms (output.left, from);
@@ -564,13 +578,9 @@ void testParameterAutomation()
         parameters.focus = 50.0f + 50.0f * noise.next();
         parameters.air = 50.0f + 50.0f * noise.next();
         parameters.stability = 50.0f + 50.0f * noise.next();
-        parameters.lowMonoHz = 340.0f + 260.0f * noise.next();
         parameters.sibilanceGuard = 50.0f + 50.0f * noise.next();
         parameters.transientFocus = 50.0f + 50.0f * noise.next();
         parameters.outputDb = 3.0f * noise.next();
-        parameters.monoSafe = noise.next() > 0.0f;
-        parameters.centerLock = noise.next() > 0.0f;
-        parameters.autoGain = noise.next() > 0.0f;
         engine.setParameters (parameters);
 
         const int count = (int) std::min ((std::size_t) blockSize, left.size() - position);
@@ -702,7 +712,8 @@ int main()
     testCrossover();
     testMidSide();
     testVelvetNoise();
-    testStftIsPureDelayAtZeroDepth();
+    testStftIsSilentAtZeroGain();
+    testStftSideIsQuadratureToMid();
     testStftPreservesSpectrum();
     testWidthZeroIsNull();
     testMonoCompatibility();
