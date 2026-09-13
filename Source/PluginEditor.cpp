@@ -167,7 +167,7 @@ void PocketLook::drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, b
         return;
     }
 
-    // Ordinary labelled button, such as the Quality toggle.
+    // Ordinary labelled button, such as the drawer arrow.
     text (g, name, r, 14.0f, ink(), juce::Justification::centred);
 }
 
@@ -422,25 +422,22 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
     setResizable (true, true);
 
     for (auto* c : std::initializer_list<juce::Component*> { &widthDial, &focusDial, &airDial, &stabilityDial,
-                                                            &lowMonoDial, &sibilanceDial, &transientDial, &outputDial,
-                                                            &engineSelector, &settingsButton, &bypassButton,
-                                                            &qualityButton, &monoSafeButton, &centerLockButton,
-                                                            &autoGainButton })
+                                                            &sibilanceDial, &transientDial, &outputDial,
+                                                            &settingsButton, &bypassButton, &drawerButton })
         addAndMakeVisible (c);
+
+    addChildComponent (engineSelector);
 
     widthAttach = std::make_unique<SliderAttachment> (p.parameters, "width", widthDial);
     focusAttach = std::make_unique<SliderAttachment> (p.parameters, "focus", focusDial);
     airAttach = std::make_unique<SliderAttachment> (p.parameters, "air", airDial);
     stabilityAttach = std::make_unique<SliderAttachment> (p.parameters, "stability", stabilityDial);
-    lowMonoAttach = std::make_unique<SliderAttachment> (p.parameters, "lowMono", lowMonoDial);
     sibilanceAttach = std::make_unique<SliderAttachment> (p.parameters, "sibilanceGuard", sibilanceDial);
     transientAttach = std::make_unique<SliderAttachment> (p.parameters, "transientFocus", transientDial);
     outputAttach = std::make_unique<SliderAttachment> (p.parameters, "output", outputDial);
     outputDial.setDoubleClickReturnValue (true, 0.0);
 
-    monoSafeAttach = std::make_unique<ButtonAttachment> (p.parameters, "monoSafe", monoSafeButton);
-    centerLockAttach = std::make_unique<ButtonAttachment> (p.parameters, "centerLock", centerLockButton);
-    autoGainAttach = std::make_unique<ButtonAttachment> (p.parameters, "autoGain", autoGainButton);
+    drawerButton.onClick = [this] { setDrawerOpen (! drawerOpen); };
 
     bypassButton.setClickingTogglesState (true);
     bypassAttach = std::make_unique<ButtonAttachment> (p.parameters, "bypass", bypassButton);
@@ -469,35 +466,25 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
             *qualityParameter,
             [this] (float value)
             {
-                qualityButton.setButtonText (value < 0.5f ? "Live" : "Studio");
+                // Quality is a setup decision, not a mix control, so it only
+                // appears in the gear menu now.
+                qualityLive = value < 0.5f;
                 repaint();
             });
-
-        qualityButton.onClick = [this, qualityParameter]
-        {
-            const bool live = qualityButton.getButtonText() == "Live";
-            if (qualityAttach != nullptr)
-                qualityAttach->setValueAsCompleteGesture (live ? 1.0f : 0.0f);
-            juce::ignoreUnused (qualityParameter);
-        };
 
         qualityAttach->sendInitialUpdate();
     }
 
     widthDial.setTooltip ("Stereo spread of the synthesised Side signal. The mono sum never changes.");
     focusDial.setTooltip ("Keeps the intelligibility range of the voice centred while the rest spreads.");
-    airDial.setTooltip ("Extra width above 6 kHz for an airy top end.");
+    airDial.setTooltip ("Extra width in the top octaves, as a pure band gain, so the image cannot move.");
     stabilityDial.setTooltip ("How quickly the width follows the voice. Higher is calmer.");
-    lowMonoDial.setTooltip ("Everything below this frequency stays mono.");
     sibilanceDial.setTooltip ("Pulls the width back on s and t sounds, which is where widening gets harsh.");
     transientDial.setTooltip ("Pulls the width back on plosives and syllable attacks.");
     outputDial.setTooltip ("Output gain. Double-click resets to 0 dB.");
     bypassButton.setTooltip ("Enable / bypass processing");
     settingsButton.setTooltip ("Settings");
-    qualityButton.setTooltip ("Live: shorter frame, lower latency. Studio: longer frame, smoother spectrum.");
-    monoSafeButton.setTooltip ("Guarantees a clean mono fold down.");
-    centerLockButton.setTooltip ("Removes any inter-channel level difference, so the voice cannot drift off centre.");
-    autoGainButton.setTooltip ("Matches the processed loudness to the input.");
+    drawerButton.setTooltip ("Engine choice and live analysis readouts");
     engineSelector.setTooltip ("Adaptive parametric stereo controller. Version 0.1 uses deterministic vocal analysis; "
                                "ML model support is prepared for a future update.");
 
@@ -571,9 +558,8 @@ void WidePocketAudioProcessorEditor::showSettingsMenu()
     theme.addItem (202, "Solid Dark", true, look.theme == PocketTheme::SolidDark);
     theme.addItem (203, "Solid White", true, look.theme == PocketTheme::SolidWhite);
 
-    const bool live = qualityButton.getButtonText() == "Live";
-    quality.addItem (301, "Live (low latency)", true, live);
-    quality.addItem (302, "Studio (smoothest)", true, ! live);
+    quality.addItem (301, "Live (low latency)", true, qualityLive);
+    quality.addItem (302, "Studio (smoothest)", true, ! qualityLive);
 
     root.addSubMenu ("Quality", quality);
     root.addSeparator();
@@ -659,22 +645,20 @@ void WidePocketAudioProcessorEditor::resized()
     settingsButton.setBounds (scaled (838, 22, 40, 40));
     bypassButton.setBounds (scaled (888, 22, 40, 40));
 
-    widthDial.setBounds (scaled (690, 96, 240, 240));
-    focusDial.setBounds (scaled (690, 350, 240, 240));
+    // Right hand column: the two dials that are actually mixed with, and a
+    // small Output between them. Same arrangement as Phase Pocket.
+    widthDial.setBounds (scaled (700, 96, 236, 236));
+    focusDial.setBounds (scaled (700, 352, 236, 236));
+    outputDial.setBounds (scaled (604, 268, 96, 106));
 
-    airDial.setBounds (scaled (24, 312, 100, 110));
-    stabilityDial.setBounds (scaled (128, 312, 100, 110));
-    lowMonoDial.setBounds (scaled (232, 312, 100, 110));
-    sibilanceDial.setBounds (scaled (336, 312, 100, 110));
-    transientDial.setBounds (scaled (440, 312, 100, 110));
-    outputDial.setBounds (scaled (544, 312, 100, 110));
+    // Under the scope: the four shaping dials.
+    airDial.setBounds (scaled (28, 440, 124, 126));
+    stabilityDial.setBounds (scaled (168, 440, 124, 126));
+    sibilanceDial.setBounds (scaled (308, 440, 124, 126));
+    transientDial.setBounds (scaled (448, 440, 124, 126));
 
-    engineSelector.setBounds (scaled (24, 434, 300, 96));
-    qualityButton.setBounds (scaled (340, 478, 104, 44));
-
-    monoSafeButton.setBounds (scaled (462, 438, 150, 28));
-    centerLockButton.setBounds (scaled (462, 468, 150, 28));
-    autoGainButton.setBounds (scaled (462, 498, 150, 28));
+    drawerButton.setBounds (scaled (28, 586, 170, 30));
+    engineSelector.setBounds (scaled (44, 300, 300, 96));
 
     blurArea = scaled (12, 82, 936, 542);
     blurredSnapshot = {};
@@ -756,7 +740,7 @@ void WidePocketAudioProcessorEditor::panel (juce::Graphics& g, juce::Rectangle<f
     g.drawRoundedRectangle (r, 16.0f, 1.0f);
 }
 
-void WidePocketAudioProcessorEditor::spectrumView (juce::Graphics& g, juce::Rectangle<float> box)
+void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Rectangle<float> box)
 {
     const bool glow = look.theme != PocketTheme::SolidWhite;
     const float textGlow = glow ? 0.075f : 0.0f;
@@ -768,86 +752,123 @@ void WidePocketAudioProcessorEditor::spectrumView (juce::Graphics& g, juce::Rect
     const auto secondary = look.muted();
     const auto grid = look.pick (0xff223349, 0xff363636, 0xffdddddd);
 
-    text (g, "WIDTH BY FREQUENCY", { box.getX() + 18, box.getY() + 12, 260, 24 }, 13.0f, label,
+    text (g, "STEREO IMAGE", { box.getX() + 18, box.getY() + 12, 260, 24 }, 13.0f, label,
           juce::Justification::centredLeft, textGlow);
-    text (g, "MONO   <-->   WIDE", { box.getRight() - 240, box.getY() + 12, 216, 24 }, 11.0f, secondary,
-          juce::Justification::centredRight, textGlow);
 
-    const juce::Rectangle<float> plot (box.getX() + 18, box.getY() + 47, box.getWidth() - 46, box.getHeight() - 84);
+    auto field = box.withTrimmedTop (40.0f).reduced (26.0f, 16.0f);
 
-    for (int i = 0; i <= 4; ++i)
+    // A wide half dome, the way Ozone Imager draws it: the width of the cloud
+    // is the stereo spread, the height is the level. It is the same
+    // goniometer as before, stretched horizontally.
+    const float halfWidth = field.getWidth() * 0.5f;
+    const float height = field.getHeight();
+    const float centreX = field.getCentreX();
+    const float baseY = field.getBottom();
+
+    const auto domePoint = [centreX, baseY, halfWidth, height] (float angle, float magnitude)
     {
-        g.setColour (grid);
-        const float y = plot.getY() + float (i) * plot.getHeight() / 4.0f;
-        g.drawLine (plot.getX(), y, plot.getRight(), y);
-    }
+        return juce::Point<float> (centreX + std::sin (angle) * magnitude * halfWidth,
+                                   baseY - std::cos (angle) * magnitude * height);
+    };
 
-    const int bands = (int) smoothedBands.size();
-    const float cellWidth = plot.getWidth() / float (bands);
-
-    for (int band = 0; band < bands; ++band)
+    // Grid: three stretched arcs plus the L / C / R guide lines.
+    for (const float magnitude : { 0.33f, 0.66f, 1.0f })
     {
-        const float value = juce::jlimit (0.0f, 1.0f, smoothedBands[(std::size_t) band]);
-        auto bar = juce::Rectangle<float> (plot.getX() + cellWidth * float (band) + 3.0f,
-                                           plot.getBottom() - value * plot.getHeight(),
-                                           cellWidth - 6.0f,
-                                           value * plot.getHeight());
-
-        const auto accent = look.isNeon() ? juce::Colour (0xff5987ff).interpolatedWith (juce::Colour (0xff32d4cb),
-                                                                                       float (band) / float (bands - 1))
-                                          : look.pick (0, 0xffd0d0d0, 0xff3a3c40);
-
-        if (glow)
+        juce::Path arc;
+        for (int step = 0; step <= 48; ++step)
         {
-            g.setColour (accent.withAlpha (0.16f));
-            g.fillRoundedRectangle (bar.expanded (2.0f), 4.0f);
+            const float angle = juce::MathConstants<float>::halfPi * (-1.0f + 2.0f * float (step) / 48.0f);
+            const auto point = domePoint (angle, magnitude);
+
+            if (step == 0)
+                arc.startNewSubPath (point);
+            else
+                arc.lineTo (point);
         }
 
-        g.setColour (accent.withAlpha (0.85f));
-        g.fillRoundedRectangle (bar.withHeight (juce::jmax (2.0f, bar.getHeight())), 3.0f);
-
-        if (band % 3 == 0)
-            text (g, hzLabel (wp::VocalAnalyzer::bandLowEdgeHz (band)),
-                  { plot.getX() + cellWidth * float (band) - 16.0f, plot.getBottom() + 6.0f, 70.0f, 18.0f },
-                  10.0f, secondary, juce::Justification::centredLeft, textGlow);
+        g.setColour (grid.withAlpha (magnitude >= 1.0f ? 1.0f : 0.6f));
+        g.strokePath (arc, juce::PathStrokeType (1.0f));
     }
+
+    for (const float angle : { -juce::MathConstants<float>::halfPi,
+                               -juce::MathConstants<float>::pi * 0.25f,
+                               0.0f,
+                               juce::MathConstants<float>::pi * 0.25f,
+                               juce::MathConstants<float>::halfPi })
+    {
+        g.setColour (grid.withAlpha (0.55f));
+        const auto point = domePoint (angle, 1.0f);
+        g.drawLine (centreX, baseY, point.x, point.y, angle == 0.0f ? 0.9f : 0.6f);
+    }
+
+    text (g, "L", { field.getX() - 4.0f, baseY - 18.0f, 20.0f, 18.0f }, 11.0f, secondary,
+          juce::Justification::centred, textGlow);
+    text (g, "C", { centreX - 10.0f, field.getY() - 18.0f, 20.0f, 18.0f }, 11.0f, secondary,
+          juce::Justification::centred, textGlow);
+    text (g, "R", { field.getRight() - 16.0f, baseY - 18.0f, 20.0f, 18.0f }, 11.0f, secondary,
+          juce::Justification::centred, textGlow);
+
+    // Correlation scale on the right, as on the reference display.
+    const auto scaleArea = juce::Rectangle<float> (box.getRight() - 22.0f, field.getY(), 20.0f, height);
+    for (int i = 0; i <= 2; ++i)
+        text (g, i == 0 ? "+1" : (i == 1 ? "0" : "-1"),
+              { scaleArea.getX(), scaleArea.getY() + height * 0.5f * float (i) - 8.0f, 20.0f, 16.0f },
+              9.5f, secondary, juce::Justification::centredRight, textGlow);
+
+    const auto accent = look.isNeon() ? juce::Colour (0xff32d4cb) : look.pick (0, 0xffd8d8d8, 0xff3a3c40);
+    const int count = scatterFilled;
+
+    for (int i = 0; i < count; ++i)
+    {
+        const auto point = scatter[(std::size_t) ((scatterCursor - count + i + (int) scatter.size()) % (int) scatter.size())];
+
+        const float mid = (point.x + point.y) * 0.7071f;
+
+        // Left heavy material must sit on the left. The previous version used
+        // (L - R), which mirrored the display against every other meter.
+        const float side = (point.y - point.x) * 0.7071f;
+
+        const float magnitude = juce::jlimit (0.0f, 1.0f, std::sqrt (mid * mid + side * side));
+        const float angle = std::atan2 (side, std::abs (mid));
+        const auto position = domePoint (angle, magnitude);
+
+        // Newest points are brightest, which is what makes fast movement
+        // readable without slowing the display down.
+        const float age = float (i) / float (juce::jmax (1, count));
+        g.setColour (accent.withAlpha (0.05f + 0.55f * age * age));
+        g.fillEllipse (position.x - 1.0f, position.y - 1.0f, 2.0f, 2.0f);
+    }
+
+    const float correlation = juce::jlimit (-1.0f, 1.0f, latest.correlation);
+    g.setColour (accent.withAlpha (0.9f));
+    g.fillEllipse (scaleArea.getX() - 6.0f,
+                   scaleArea.getY() + height * 0.5f * (1.0f - correlation) - 2.0f,
+                   4.0f, 4.0f);
 }
 
-void WidePocketAudioProcessorEditor::goniometer (juce::Graphics& g, juce::Rectangle<float> box)
+void WidePocketAudioProcessorEditor::setDrawerOpen (bool shouldBeOpen)
 {
-    const bool glow = look.theme != PocketTheme::SolidWhite;
+    drawerOpen = shouldBeOpen;
+    engineSelector.setVisible (shouldBeOpen);
+    drawerButton.setButtonText (shouldBeOpen ? "Hide engine & analysis" : "Engine & analysis");
 
-    g.setColour (look.pick (0xff050b13, 0xff111111, 0xffffffff));
+    for (auto* dial : std::initializer_list<juce::Component*> { &airDial, &stabilityDial, &sibilanceDial, &transientDial })
+        dial->setVisible (! shouldBeOpen);
+
+    repaint();
+}
+
+void WidePocketAudioProcessorEditor::drawer (juce::Graphics& g, juce::Rectangle<float> box)
+{
+    g.setColour (look.pick (0xff0a1220, 0xff1b1b1b, 0xfffafafa));
     g.fillRoundedRectangle (box, 12.0f);
+    g.setColour (look.pick (0xff304259, 0xff505050, 0xffbfc0c2));
+    g.drawRoundedRectangle (box, 12.0f, 1.0f);
 
-    text (g, "IMAGE", box.withHeight (26.0f).withTrimmedLeft (16.0f), 12.0f, look.muted(),
-          juce::Justification::centredLeft, glow ? 0.075f : 0.0f);
+    text (g, "ENGINE", { box.getX() + 20.0f, box.getY() + 10.0f, 200.0f, 22.0f }, 11.0f, look.muted(),
+          juce::Justification::centredLeft, look.isNeon() ? 0.075f : 0.0f);
 
-    auto field = box.withTrimmedTop (26.0f).reduced (14.0f);
-    const float radius = juce::jmin (field.getWidth(), field.getHeight()) * 0.5f;
-    const auto centre = field.getCentre();
-
-    g.setColour (look.pick (0xff223349, 0xff363636, 0xffdddddd));
-    g.drawEllipse (centre.x - radius, centre.y - radius, radius * 2, radius * 2, 1.0f);
-    g.drawLine (centre.x, centre.y - radius, centre.x, centre.y + radius, 0.7f);
-    g.drawLine (centre.x - radius, centre.y, centre.x + radius, centre.y, 0.7f);
-
-    const auto accent = look.isNeon() ? juce::Colour (0xff32d4cb) : look.ink();
-
-    for (int i = 0; i < scatterFilled; ++i)
-    {
-        const auto point = scatter[(std::size_t) ((scatterCursor - scatterFilled + i + (int) scatter.size()) % (int) scatter.size())];
-
-        // Mid up, Side across: the classic vectorscope rotation.
-        const float mid = 0.5f * (point.x + point.y);
-        const float side = 0.5f * (point.x - point.y);
-
-        const float x = centre.x + juce::jlimit (-1.0f, 1.0f, side) * radius;
-        const float y = centre.y - juce::jlimit (-1.0f, 1.0f, mid) * radius;
-
-        g.setColour (accent.withAlpha (0.10f + 0.5f * float (i) / float (juce::jmax (1, scatterFilled))));
-        g.fillEllipse (x - 1.1f, y - 1.1f, 2.2f, 2.2f);
-    }
+    readouts (g, { box.getX() + 20.0f, box.getY() + 128.0f, box.getWidth() - 40.0f, 84.0f });
 }
 
 void WidePocketAudioProcessorEditor::readouts (juce::Graphics& g, juce::Rectangle<float> box)
@@ -899,11 +920,10 @@ void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
 
     panel (g, scaled (12, 82, 936, 542).toFloat().reduced (1.0f));
 
-    spectrumView (g, scaled (24, 96, 420, 204).toFloat());
-    goniometer (g, scaled (456, 96, 188, 204).toFloat());
-    readouts (g, scaled (24, 538, 620, 80).toFloat());
+    vectorScope (g, scaled (24, 96, 556, 330).toFloat());
 
-    text (g, "QUALITY", scaled (340, 452, 120, 22).toFloat(), 11.0f * s, look.muted(), juce::Justification::centredLeft);
+    if (drawerOpen)
+        drawer (g, scaled (24, 282, 556, 290).toFloat());
 }
 
 void WidePocketAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
