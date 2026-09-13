@@ -374,6 +374,8 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
 
         if (bypassTarget)
             captureBlurSnapshot();
+        else
+            blurredSnapshot = juce::Image();
 
         bypassMix = bypassTarget ? 1.0f : 0.0f;
         repaint();
@@ -484,49 +486,35 @@ void WidePocketAudioProcessorEditor::captureBlurSnapshot()
     if (capturingBlur || blurArea.isEmpty())
         return;
 
+    // Exactly the Phase Pocket recipe: snapshot without the overlay, shrink
+    // to a sixth, blur that, and stretch it back. Cheap enough to run on the
+    // click instead of a slow full resolution box blur.
     capturingBlur = true;
-    blurredSnapshot = createComponentSnapshot (blurArea, false);
+    const float previousMix = bypassMix;
+    bypassMix = 0.0f;
+    auto source = createComponentSnapshot (blurArea, true, 1.0f);
+    bypassMix = previousMix;
     capturingBlur = false;
 
-    if (! blurredSnapshot.isValid())
+    if (! source.isValid() || source.getWidth() < 8 || source.getHeight() < 8)
         return;
 
-    // Cheap two pass box blur: enough to read as frozen glass, and it only
-    // runs when bypass is engaged.
-    for (int pass = 0; pass < 2; ++pass)
+    const int w = juce::jmax (16, source.getWidth() / 6);
+    const int h = juce::jmax (16, source.getHeight() / 6);
+
+    juce::Image small (juce::Image::ARGB, w, h, true);
     {
-        juce::Image copy = blurredSnapshot.createCopy();
-        juce::Image::BitmapData source (copy, juce::Image::BitmapData::readOnly);
-        juce::Image::BitmapData destination (blurredSnapshot, juce::Image::BitmapData::writeOnly);
-
-        constexpr int radius = 3;
-
-        for (int y = 0; y < copy.getHeight(); ++y)
-        {
-            for (int x = 0; x < copy.getWidth(); ++x)
-            {
-                int red = 0, green = 0, blue = 0, count = 0;
-
-                for (int dy = -radius; dy <= radius; ++dy)
-                {
-                    for (int dx = -radius; dx <= radius; ++dx)
-                    {
-                        const int sx = juce::jlimit (0, copy.getWidth() - 1, x + dx);
-                        const int sy = juce::jlimit (0, copy.getHeight() - 1, y + dy);
-                        const auto pixel = source.getPixelColour (sx, sy);
-                        red += pixel.getRed();
-                        green += pixel.getGreen();
-                        blue += pixel.getBlue();
-                        ++count;
-                    }
-                }
-
-                destination.setPixelColour (x, y, juce::Colour ((juce::uint8) (red / count),
-                                                                (juce::uint8) (green / count),
-                                                                (juce::uint8) (blue / count)));
-            }
-        }
+        juce::Graphics sg (small);
+        sg.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        sg.drawImage (source, juce::Rectangle<float> (0, 0, float (w), float (h)), juce::RectanglePlacement::stretchToFit);
     }
+
+    juce::Image soft (juce::Image::ARGB, w, h, true);
+    juce::ImageConvolutionKernel kernel (9);
+    kernel.createGaussianBlur (2.2f);
+    kernel.applyToImage (soft, small, small.getBounds());
+
+    blurredSnapshot = soft;
 }
 
 juce::Rectangle<int> WidePocketAudioProcessorEditor::scaled (float x, float y, float w, float h) const
@@ -540,19 +528,19 @@ void WidePocketAudioProcessorEditor::resized()
     settingsButton.setBounds (scaled (838, 22, 40, 40));
     bypassButton.setBounds (scaled (888, 22, 40, 40));
 
-    // Right hand column, exactly as Phase Pocket v0.8: the two big dials in
-    // the single outlined panel, with the small Output between them and to
-    // the right of their centre line.
+    // Right hand column, on the Phase Pocket grid: the two big dials inside
+    // the single outlined panel, with the small Output between them.
     widthDial.setBounds (scaled (725, 104, 200, 220));
     focusDial.setBounds (scaled (725, 350, 200, 220));
     outputDial.setBounds (scaled (848, 293, 84, 84));
     outputDial.toFront (false);
 
-    // Under the scope: the four voice control dials.
-    airDial.setBounds (scaled (48, 420, 126, 126));
-    stabilityDial.setBounds (scaled (204, 420, 126, 126));
-    sibilanceDial.setBounds (scaled (360, 420, 126, 126));
-    transientDial.setBounds (scaled (516, 420, 126, 126));
+    // Voice control row, centred inside the lower block that now starts
+    // under the taller scope.
+    airDial.setBounds (scaled (75, 444, 116, 116));
+    stabilityDial.setBounds (scaled (227, 444, 116, 116));
+    sibilanceDial.setBounds (scaled (379, 444, 116, 116));
+    transientDial.setBounds (scaled (531, 444, 116, 116));
 
     blurArea = scaled (12, 82, 936, 542);
     blurredSnapshot = {};
@@ -583,18 +571,18 @@ void WidePocketAudioProcessorEditor::timerCallback()
     if (bypassed != bypassTarget)
     {
         bypassTarget = bypassed;
+
         if (bypassed)
             captureBlurSnapshot();
+        else
+            blurredSnapshot = juce::Image();
     }
 
     // No easing: the overlay is either on or off on the same frame as the
     // parameter change.
     const float target = bypassTarget ? 1.0f : 0.0f;
     if (bypassMix != target)
-    {
         bypassMix = target;
-        repaint();
-    }
 
     if (resizeStamp > 0.0 && juce::Time::getMillisecondCounterHiRes() - resizeStamp > 600.0)
         saveSize();
@@ -629,6 +617,7 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
 {
     const bool glow = look.theme != PocketTheme::SolidWhite;
     const float textGlow = glow ? 0.075f : 0.0f;
+    const float s = float (getWidth()) / 960.0f;
 
     g.setColour (look.pick (0xff050b13, 0xff111111, 0xffffffff));
     g.fillRoundedRectangle (box, 12.0f);
@@ -637,14 +626,11 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
     const auto secondary = look.muted();
     const auto grid = look.pick (0xff223349, 0xff363636, 0xffdddddd);
 
-    text (g, "STEREO IMAGE", { box.getX() + 18, box.getY() + 12, 260, 24 }, 13.0f, label,
+    text (g, "STEREO IMAGE", { box.getX() + 18.0f * s, box.getY() + 12.0f * s, 260.0f * s, 24.0f * s }, 13.0f * s, label,
           juce::Justification::centredLeft, textGlow);
 
-    auto field = box.withTrimmedTop (40.0f).reduced (26.0f, 16.0f);
+    auto field = box.withTrimmedTop (40.0f * s).reduced (26.0f * s, 16.0f * s);
 
-    // A wide half dome, the way Ozone Imager draws it: the width of the cloud
-    // is the stereo spread, the height is the level. It is the same
-    // goniometer as before, stretched horizontally.
     const float halfWidth = field.getWidth() * 0.5f;
     const float height = field.getHeight();
     const float centreX = field.getCentreX();
@@ -686,26 +672,45 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
         g.drawLine (centreX, baseY, point.x, point.y, angle == 0.0f ? 0.9f : 0.6f);
     }
 
-    text (g, "L", { field.getX() - 4.0f, baseY - 18.0f, 20.0f, 18.0f }, 11.0f, secondary,
+    text (g, "L", { field.getX() - 4.0f * s, baseY - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
           juce::Justification::centred, textGlow);
-    text (g, "C", { centreX - 10.0f, field.getY() - 18.0f, 20.0f, 18.0f }, 11.0f, secondary,
+    text (g, "C", { centreX - 10.0f * s, field.getY() - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
           juce::Justification::centred, textGlow);
-    text (g, "R", { field.getRight() - 16.0f, baseY - 18.0f, 20.0f, 18.0f }, 11.0f, secondary,
+    text (g, "R", { field.getRight() - 16.0f * s, baseY - 18.0f * s, 20.0f * s, 18.0f * s }, 11.0f * s, secondary,
           juce::Justification::centred, textGlow);
 
     // Correlation scale on the right, as on the reference display.
-    const auto scaleArea = juce::Rectangle<float> (box.getRight() - 22.0f, field.getY(), 20.0f, height);
+    const auto scaleArea = juce::Rectangle<float> (box.getRight() - 22.0f * s, field.getY(), 20.0f * s, height);
     for (int i = 0; i <= 2; ++i)
         text (g, i == 0 ? "+1" : (i == 1 ? "0" : "-1"),
-              { scaleArea.getX(), scaleArea.getY() + height * 0.5f * float (i) - 8.0f, 20.0f, 16.0f },
-              9.5f, secondary, juce::Justification::centredRight, textGlow);
+              { scaleArea.getX(), scaleArea.getY() + height * 0.5f * float (i) - 8.0f * s, 20.0f * s, 16.0f * s },
+              9.5f * s, secondary, juce::Justification::centredRight, textGlow);
 
     const auto accent = look.isNeon() ? juce::Colour (0xff32d4cb) : look.pick (0, 0xffd8d8d8, 0xff3a3c40);
     const int count = scatterFilled;
 
+    const auto indexOf = [this, count] (int i)
+    {
+        return (std::size_t) ((scatterCursor - count + i + (int) scatter.size()) % (int) scatter.size());
+    };
+
+    // Auto gain for the display only: the dome is always filled to the top,
+    // so a quiet take is just as readable as a loud one. The peak of the
+    // visible history sets the scale, never the absolute level.
+    float peak = 0.0f;
     for (int i = 0; i < count; ++i)
     {
-        const auto point = scatter[(std::size_t) ((scatterCursor - count + i + (int) scatter.size()) % (int) scatter.size())];
+        const auto point = scatter[indexOf (i)];
+        const float mid = (point.x + point.y) * 0.7071f;
+        const float side = (point.y - point.x) * 0.7071f;
+        peak = juce::jmax (peak, std::sqrt (mid * mid + side * side));
+    }
+
+    const float normalisation = peak > 1.0e-5f ? 1.0f / peak : 1.0f;
+
+    for (int i = 0; i < count; ++i)
+    {
+        const auto point = scatter[indexOf (i)];
 
         const float mid = (point.x + point.y) * 0.7071f;
 
@@ -713,7 +718,7 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
         // (L - R), which mirrored the display against every other meter.
         const float side = (point.y - point.x) * 0.7071f;
 
-        const float magnitude = juce::jlimit (0.0f, 1.0f, std::sqrt (mid * mid + side * side));
+        const float magnitude = juce::jlimit (0.0f, 1.0f, std::sqrt (mid * mid + side * side) * normalisation);
         const float angle = std::atan2 (side, std::abs (mid));
         const auto position = domePoint (angle, magnitude);
 
@@ -726,9 +731,9 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
 
     const float correlation = juce::jlimit (-1.0f, 1.0f, latest.correlation);
     g.setColour (accent.withAlpha (0.9f));
-    g.fillEllipse (scaleArea.getX() - 6.0f,
+    g.fillEllipse (scaleArea.getX() - 6.0f * s,
                    scaleArea.getY() + height * 0.5f * (1.0f - correlation) - 2.0f,
-                   4.0f, 4.0f);
+                   4.0f * s, 4.0f * s);
 }
 
 void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
@@ -737,51 +742,56 @@ void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.fillAll (look.pick (0xff060b12, 0xff171717, 0xfff1f1f1));
 
-    // Header: big centred product name, no strap line, and the same thin
-    // separator Phase Pocket draws under it.
-    text (g, "WIDE POCKET", scaled (0, 14, 960, 44).toFloat(), 31.0f * s, look.ink(),
-          juce::Justification::centred, look.isNeon() ? 0.09f : 0.0f);
+    // Header on the Phase Pocket grid: the same 39 px centred product name
+    // and the same thin separator underneath it.
+    text (g, "WIDE POCKET", scaled (180, 14, 600, 54).toFloat(), 39.0f * s, look.ink(),
+          juce::Justification::centred);
 
-    g.setColour (look.pick (0xff223349, 0xff363636, 0xffd6d7d9));
-    g.fillRect (scaled (24, 70, 912, 1).toFloat());
+    g.setColour (look.pick (0xff263347, 0xff444444, 0xffc5c6c8));
+    g.fillRect (scaled (24, 78, 912, 1).toFloat());
 
     // The only outlined panel sits around the two big dials on the right.
-    panel (g, scaled (712, 82, 236, 542).toFloat().reduced (1.0f));
+    panel (g, scaled (714, 94, 222, 480).toFloat());
 
-    vectorScope (g, scaled (24, 100, 676, 242).toFloat());
+    // Stereo image, 30 percent taller than before so the wide dome no longer
+    // looks stretched.
+    vectorScope (g, scaled (24, 94, 674, 299).toFloat());
 
-    // Lower left block: the four voice control dials, drawn like the scope
-    // rather than as a second outlined panel.
+    // Lower block: the four voice control dials, drawn like the scope rather
+    // than as a second outlined panel.
     {
-        const auto box = scaled (24, 360, 676, 230).toFloat();
+        const auto box = scaled (24, 407, 674, 167).toFloat();
 
         g.setColour (look.pick (0xff050b13, 0xff111111, 0xffffffff));
         g.fillRoundedRectangle (box, 12.0f);
 
-        text (g, "VOICE CONTROL", { box.getX() + 18.0f, box.getY() + 12.0f, 300.0f, 24.0f }, 13.0f * s,
+        text (g, "VOICE CONTROL", { box.getX() + 18.0f * s, box.getY() + 12.0f * s, 260.0f * s, 24.0f * s }, 13.0f * s,
               look.ink(), juce::Justification::centredLeft, look.isNeon() ? 0.075f : 0.0f);
     }
 }
 
 void WidePocketAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
 {
-    if (bypassMix <= 0.001f)
+    if (capturingBlur || bypassMix < 0.5f || ! blurredSnapshot.isValid())
         return;
 
-    if (blurredSnapshot.isValid())
-    {
-        g.setOpacity (bypassMix);
-        g.drawImage (blurredSnapshot, blurArea.toFloat());
-        g.setOpacity (1.0f);
-    }
+    // Same overlay as Phase Pocket, including the wording and the position.
+    juce::Graphics::ScopedSaveState save (g);
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+    g.drawImage (blurredSnapshot, blurArea.toFloat(), juce::RectanglePlacement::stretchToFit);
 
-    g.setColour (look.pick (0xff060b12, 0xff171717, 0xfff1f1f1).withAlpha (0.55f * bypassMix));
-    g.fillRoundedRectangle (blurArea.toFloat(), 16.0f);
+    const bool dark = look.theme != PocketTheme::SolidWhite;
 
-    // Larger word, lifted above the geometric centre, as in Phase Pocket.
-    const auto area = blurArea.toFloat();
-    const auto textArea = area.withHeight (area.getHeight() * 0.62f);
+    g.setColour ((dark ? juce::Colours::black : juce::Colours::white).withAlpha (0.18f));
+    g.fillRoundedRectangle (blurArea.toFloat(), 12.0f);
 
-    text (g, "BYPASS", textArea, 38.0f * float (getWidth()) / 960.0f,
-          look.ink().withAlpha (bypassMix), juce::Justification::centred, look.isNeon() ? 0.12f * bypassMix : 0.0f);
+    const auto centre = blurArea.toFloat().translated (0, -float (blurArea.getHeight()) * 0.05f);
+    const float size = juce::jmax (34.0f, float (getWidth()) / 18.0f);
+    const auto ink = dark ? juce::Colours::white : juce::Colour (0xff202124);
+
+    g.setColour ((dark ? juce::Colours::black : juce::Colours::white).withAlpha (0.55f));
+    g.setFont (uiFont (size));
+    g.drawText ("BYPASSED", centre.translated (0, 2), juce::Justification::centred);
+
+    text (g, "BYPASSED", centre, size, ink, juce::Justification::centred, dark ? 0.1f : 0.0f);
 }
