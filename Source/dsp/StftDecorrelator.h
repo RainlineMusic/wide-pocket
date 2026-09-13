@@ -1,4 +1,4 @@
-/* Wide Pocket - Natural v0.2 decorrelator: static smooth phase rotation, no recursive tail. */
+/* Wide Pocket - Natural v0.2 decorrelator: static quadrature rotation, no recursive tail. */
 #pragma once
 #include "Fft.h"
 #include "VocalAnalyzer.h"
@@ -22,10 +22,19 @@ namespace wp
     it is worst on a male voice because the dense low harmonics keep
     re-exciting the tail.
 
-    Here the Side candidate is the Mid spectrum multiplied by a frozen,
-    smoothly varying phase rotation. The plugin is then a pure static
-    allpass: no feedback, no echo, group delay bounded to a few tens of
-    samples, the mono sum untouched, and nothing left that can ring. */
+    Here the Side candidate is the Mid spectrum multiplied by a frozen
+    phase rotation. The plugin is then a pure static allpass: no feedback,
+    no echo, group delay bounded to a few tens of samples, the mono sum
+    untouched, and nothing left that can ring.
+
+    The rotation is centred on quadrature (+90 degrees) and only wanders a
+    bounded amount around it. That matters: the band orthogonalisation below
+    removes whatever part of the candidate is in phase with the Mid, so a
+    rotation that sits near 0 degrees in any region of the spectrum would
+    leave almost no Side there. Quadrature is the point where the candidate
+    is already orthogonal to the Mid, so the full magnitude survives, while
+    the bounded wander across bins is what keeps the two channels from
+    being a plain Hilbert copy of each other. */
 class StftDecorrelator
 {
 public:
@@ -136,7 +145,9 @@ private:
         }
 
         /* Exact broad band orthogonalisation: keeps the centre locked without
-           a time domain servo. */
+           a time domain servo. Because the rotation is already close to
+           quadrature, the removed in phase part is small and the Side keeps
+           the spectrum of the Mid. */
         for (int b = 1; b < numBins - 1; ++b)
         {
             const int band = binBand[(size_t) b];
@@ -188,23 +199,24 @@ private:
         transientActive = holdFrames > 0;
     }
 
-    /* A frozen random walk in phase. The per bin step is bounded, so the
-       equivalent impulse response stays inside a small part of the analysis
-       window (about 30 samples of group delay at 48 kHz) and cannot smear
-       transients or build a tail, while still being different enough across
-       frequency to decorrelate. */
+    /* A frozen bounded random walk around quadrature. The per bin step and
+       the total excursion are both bounded, so the equivalent impulse
+       response stays inside a small part of the analysis window (a few tens
+       of samples of group delay at 48 kHz) and cannot smear transients or
+       build a tail, while still being different enough across frequency to
+       decorrelate. */
     void buildRotationTable()
     {
-        rotation.assign ((size_t) numBins, { 1.0f, 0.0f });
+        rotation.assign ((size_t) numBins, { 0.0f, 1.0f });
         std::uint32_t state = 0x9e3779b9u;
-        float phase = 0.0f;
+        float deviation = 0.0f;
 
         for (int b = 0; b < numBins; ++b)
         {
             state = state * 1664525u + 1013904223u;
             const float uniform = (float) ((state >> 8) & 0xffffffu) / (float) 0xffffff - 0.5f;
-            phase += 2.0f * maxPhaseStep * uniform;
-            rotation[(size_t) b] = std::polar (1.0f, phase);
+            deviation = clampf (deviation + 2.0f * maxPhaseStep * uniform, -maxDeviation, maxDeviation);
+            rotation[(size_t) b] = std::polar (1.0f, 0.5f * (float) kPi + deviation);
         }
     }
 
@@ -219,7 +231,8 @@ private:
         }
     }
 
-    static constexpr float maxPhaseStep = 0.72f;
+    static constexpr float maxPhaseStep = 0.45f;
+    static constexpr float maxDeviation = 0.9f;
 
     double sampleRate = 48000.0;
     int fftSize = 256, hopSize = 128, numBins = 129;
