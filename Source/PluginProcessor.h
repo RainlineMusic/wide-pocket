@@ -79,15 +79,11 @@ private:
     std::atomic<float>* focus = nullptr;
     std::atomic<float>* air = nullptr;
     std::atomic<float>* stability = nullptr;
-    std::atomic<float>* lowMono = nullptr;
     std::atomic<float>* sibilanceGuard = nullptr;
     std::atomic<float>* transientFocus = nullptr;
     std::atomic<float>* outputGain = nullptr;
     std::atomic<float>* engineChoice = nullptr;
     std::atomic<float>* qualityChoice = nullptr;
-    std::atomic<float>* monoSafe = nullptr;
-    std::atomic<float>* centerLock = nullptr;
-    std::atomic<float>* autoGain = nullptr;
     std::atomic<float>* bypass = nullptr;
 
     // Dry path used while bypassed, so switching is click free and the
@@ -95,10 +91,15 @@ private:
     juce::AudioBuffer<float> bypassDelayBuffer;
     int bypassWritePosition = 0;
 
-    juce::AbstractFifo fifo { 2048 };
-    std::array<WideTrace, 2048> traces {};
+    // The vector scope needs a fast, dense point stream, not one point per
+    // audio block: at 60 fps one point per block would be ~10 points a frame
+    // and the display would crawl. This queue carries ~12 000 points a
+    // second, which is ~200 per displayed frame.
+    static constexpr int fifoSize = 8192;
+    juce::AbstractFifo fifo { fifoSize };
+    std::array<WideTrace, (std::size_t) fifoSize> traces {};
     int captured = 0;
-    int decimation = 40;
+    int decimation = 4;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WidePocketAudioProcessor)
 };
