@@ -6,17 +6,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-namespace
-{
-juce::NormalisableRange<float> logHzRange (float low, float high)
-{
-    return { low, high,
-             [] (float start, float end, float proportion) { return start * std::pow (end / start, proportion); },
-             [] (float start, float end, float value) { return std::log (juce::jlimit (start, end, value) / start) / std::log (end / start); },
-             [] (float start, float end, float value) { return juce::jlimit (start, end, value); } };
-}
-} // namespace
-
 WidePocketAudioProcessor::WidePocketAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
@@ -27,15 +16,11 @@ WidePocketAudioProcessor::WidePocketAudioProcessor()
     focus = parameters.getRawParameterValue ("focus");
     air = parameters.getRawParameterValue ("air");
     stability = parameters.getRawParameterValue ("stability");
-    lowMono = parameters.getRawParameterValue ("lowMono");
     sibilanceGuard = parameters.getRawParameterValue ("sibilanceGuard");
     transientFocus = parameters.getRawParameterValue ("transientFocus");
     outputGain = parameters.getRawParameterValue ("output");
     engineChoice = parameters.getRawParameterValue ("engine");
     qualityChoice = parameters.getRawParameterValue ("quality");
-    monoSafe = parameters.getRawParameterValue ("monoSafe");
-    centerLock = parameters.getRawParameterValue ("centerLock");
-    autoGain = parameters.getRawParameterValue ("autoGain");
     bypass = parameters.getRawParameterValue ("bypass");
 }
 
@@ -55,8 +40,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidePocketAudioProcessor::la
                                          juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 40.0f));
     p.push_back (std::make_unique<Float> (juce::ParameterID { "stability", 1 }, "Stability",
                                          juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f));
-    p.push_back (std::make_unique<Float> (juce::ParameterID { "lowMono", 1 }, "Low Mono",
-                                         logHzRange (20.0f, 500.0f), 180.0f));
     p.push_back (std::make_unique<Float> (juce::ParameterID { "sibilanceGuard", 1 }, "Sibilance Guard",
                                          juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 60.0f));
     p.push_back (std::make_unique<Float> (juce::ParameterID { "transientFocus", 1 }, "Transient Focus",
@@ -69,9 +52,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidePocketAudioProcessor::la
     p.push_back (std::make_unique<Choice> (juce::ParameterID { "quality", 1 }, "Quality",
                                           juce::StringArray { "Live", "Studio" }, 1));
 
-    p.push_back (std::make_unique<Bool> (juce::ParameterID { "monoSafe", 1 }, "Mono Safe", true));
-    p.push_back (std::make_unique<Bool> (juce::ParameterID { "centerLock", 1 }, "Center Lock", true));
-    p.push_back (std::make_unique<Bool> (juce::ParameterID { "autoGain", 1 }, "Auto Gain", true));
+    // No Mono Safe / Center Lock / Auto Gain parameters. The mono sum and the
+    // centred image are structural properties of the engine now, so there is
+    // nothing to switch and nothing for the user to get wrong.
     p.push_back (std::make_unique<Bool> (juce::ParameterID { "bypass", 1 }, "Bypass", false));
 
     return { p.begin(), p.end() };
@@ -100,7 +83,7 @@ void WidePocketAudioProcessor::prepareToPlay (double sampleRate, int maximumBloc
     bypassDelayBuffer.clear();
     bypassWritePosition = 0;
 
-    decimation = juce::jmax (1, (int) (sampleRate / 1200.0));
+    decimation = juce::jmax (1, (int) (sampleRate / 12000.0));
     captured = 0;
 }
 
@@ -119,15 +102,11 @@ void WidePocketAudioProcessor::pushParameters (bool bypassed)
     p.focus = focus->load();
     p.air = air->load();
     p.stability = stability->load();
-    p.lowMonoHz = lowMono->load();
     p.sibilanceGuard = sibilanceGuard->load();
     p.transientFocus = transientFocus->load();
     p.outputDb = bypassed ? 0.0f : outputGain->load();
     p.engine = (wp::Engine) juce::jlimit (0, 2, (int) engineChoice->load());
     p.quality = (wp::Quality) juce::jlimit (0, 1, (int) qualityChoice->load());
-    p.monoSafe = monoSafe->load() > 0.5f;
-    p.centerLock = centerLock->load() > 0.5f;
-    p.autoGain = ! bypassed && autoGain->load() > 0.5f;
 
     engine.setParameters (p);
 }
@@ -216,29 +195,35 @@ void WidePocketAudioProcessor::processAudio (juce::AudioBuffer<float>& buffer, b
         return;
     }
 
-    captured += numSamples;
-    if (captured < decimation)
-        return;
-
-    captured = 0;
-
     const auto snapshot = engine.getAnalyzerSnapshot();
+    const auto bandWidths = engine.getBandWidths();
 
-    WideTrace trace;
-    trace.level = snapshot.level;
-    trace.voicing = snapshot.voicing;
-    trace.transient = snapshot.transient;
-    trace.sibilance = snapshot.sibilance;
-    trace.correlation = snapshot.correlation;
-    trace.appliedWidth = snapshot.appliedWidth;
-    trace.left = left[numSamples - 1];
-    trace.right = right[numSamples - 1];
-    trace.bandWidth = engine.getBandWidths();
-
-    int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
-    fifo.prepareToWrite (1, start1, size1, start2, size2);
-    if (size1 > 0)
+    // One point every `decimation` samples, so the scope receives a dense,
+    // evenly spaced stream instead of a single point per block.
+    for (int n = 0; n < numSamples; ++n)
     {
+        if (++captured < decimation)
+            continue;
+
+        captured = 0;
+
+        WideTrace trace;
+        trace.level = snapshot.level;
+        trace.voicing = snapshot.voicing;
+        trace.transient = snapshot.transient;
+        trace.sibilance = snapshot.sibilance;
+        trace.correlation = snapshot.correlation;
+        trace.appliedWidth = snapshot.appliedWidth;
+        trace.left = left[n];
+        trace.right = right[n];
+        trace.bandWidth = bandWidths;
+
+        int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
+        fifo.prepareToWrite (1, start1, size1, start2, size2);
+
+        if (size1 <= 0)
+            break; // the editor is not keeping up; drop the rest of the block
+
         traces[(std::size_t) start1] = trace;
         fifo.finishedWrite (1);
     }
