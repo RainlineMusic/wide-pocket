@@ -365,6 +365,20 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
 
     bypassButton.setClickingTogglesState (true);
     bypassAttach = std::make_unique<ButtonAttachment> (p.parameters, "bypass", bypassButton);
+
+    // The bypass overlay has to appear on the very click, with no ramp: the
+    // previous version eased bypassMix in the timer, which read as lag.
+    bypassButton.onClick = [this]
+    {
+        bypassTarget = bypassButton.getToggleState();
+
+        if (bypassTarget)
+            captureBlurSnapshot();
+
+        bypassMix = bypassTarget ? 1.0f : 0.0f;
+        repaint();
+    };
+
     settingsButton.onClick = [this] { showSettingsMenu(); };
 
     widthDial.setTooltip ("Stereo spread of the synthesised Side signal. The mono sum never changes.");
@@ -526,17 +540,19 @@ void WidePocketAudioProcessorEditor::resized()
     settingsButton.setBounds (scaled (838, 22, 40, 40));
     bypassButton.setBounds (scaled (888, 22, 40, 40));
 
-    // Right hand column: the two dials that are actually mixed with, and a
-    // small Output between them. Same arrangement as Phase Pocket.
-    widthDial.setBounds (scaled (700, 96, 236, 236));
-    focusDial.setBounds (scaled (700, 352, 236, 236));
-    outputDial.setBounds (scaled (604, 268, 96, 106));
+    // Right hand column, exactly as Phase Pocket v0.8: the two big dials in
+    // the single outlined panel, with the small Output between them and to
+    // the right of their centre line.
+    widthDial.setBounds (scaled (725, 104, 200, 220));
+    focusDial.setBounds (scaled (725, 350, 200, 220));
+    outputDial.setBounds (scaled (848, 293, 84, 84));
+    outputDial.toFront (false);
 
-    // Under the scope: the four shaping dials.
-    airDial.setBounds (scaled (28, 440, 124, 126));
-    stabilityDial.setBounds (scaled (168, 440, 124, 126));
-    sibilanceDial.setBounds (scaled (308, 440, 124, 126));
-    transientDial.setBounds (scaled (448, 440, 124, 126));
+    // Under the scope: the four voice control dials.
+    airDial.setBounds (scaled (48, 420, 126, 126));
+    stabilityDial.setBounds (scaled (204, 420, 126, 126));
+    sibilanceDial.setBounds (scaled (360, 420, 126, 126));
+    transientDial.setBounds (scaled (516, 420, 126, 126));
 
     blurArea = scaled (12, 82, 936, 542);
     blurredSnapshot = {};
@@ -571,13 +587,10 @@ void WidePocketAudioProcessorEditor::timerCallback()
             captureBlurSnapshot();
     }
 
+    // No easing: the overlay is either on or off on the same frame as the
+    // parameter change.
     const float target = bypassTarget ? 1.0f : 0.0f;
-    if (std::abs (bypassMix - target) > 0.001f)
-    {
-        bypassMix += (target - bypassMix) * 0.25f;
-        repaint();
-    }
-    else if (bypassMix != target)
+    if (bypassMix != target)
     {
         bypassMix = target;
         repaint();
@@ -724,15 +737,30 @@ void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.fillAll (look.pick (0xff060b12, 0xff171717, 0xfff1f1f1));
 
-    text (g, "WIDE POCKET", scaled (28, 18, 400, 30).toFloat(), 20.0f * s, look.ink(),
-          juce::Justification::centredLeft, look.isNeon() ? 0.09f : 0.0f);
-    text (g, "Natural mono-to-stereo vocal spatial widener", scaled (28, 44, 500, 22).toFloat(), 12.0f * s,
-          look.muted(), juce::Justification::centredLeft);
+    // Header: big centred product name, no strap line, and the same thin
+    // separator Phase Pocket draws under it.
+    text (g, "WIDE POCKET", scaled (0, 14, 960, 44).toFloat(), 31.0f * s, look.ink(),
+          juce::Justification::centred, look.isNeon() ? 0.09f : 0.0f);
 
-    panel (g, scaled (12, 82, 936, 542).toFloat().reduced (1.0f));
+    g.setColour (look.pick (0xff223349, 0xff363636, 0xffd6d7d9));
+    g.fillRect (scaled (24, 70, 912, 1).toFloat());
 
-    vectorScope (g, scaled (24, 96, 556, 330).toFloat());
+    // The only outlined panel sits around the two big dials on the right.
+    panel (g, scaled (712, 82, 236, 542).toFloat().reduced (1.0f));
 
+    vectorScope (g, scaled (24, 100, 676, 242).toFloat());
+
+    // Lower left block: the four voice control dials, drawn like the scope
+    // rather than as a second outlined panel.
+    {
+        const auto box = scaled (24, 360, 676, 230).toFloat();
+
+        g.setColour (look.pick (0xff050b13, 0xff111111, 0xffffffff));
+        g.fillRoundedRectangle (box, 12.0f);
+
+        text (g, "VOICE CONTROL", { box.getX() + 18.0f, box.getY() + 12.0f, 300.0f, 24.0f }, 13.0f * s,
+              look.ink(), juce::Justification::centredLeft, look.isNeon() ? 0.075f : 0.0f);
+    }
 }
 
 void WidePocketAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
@@ -750,6 +778,10 @@ void WidePocketAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
     g.setColour (look.pick (0xff060b12, 0xff171717, 0xfff1f1f1).withAlpha (0.55f * bypassMix));
     g.fillRoundedRectangle (blurArea.toFloat(), 16.0f);
 
-    text (g, "BYPASSED", blurArea.toFloat(), 26.0f * float (getWidth()) / 960.0f,
+    // Larger word, lifted above the geometric centre, as in Phase Pocket.
+    const auto area = blurArea.toFloat();
+    const auto textArea = area.withHeight (area.getHeight() * 0.62f);
+
+    text (g, "BYPASS", textArea, 38.0f * float (getWidth()) / 960.0f,
           look.ink().withAlpha (bypassMix), juce::Justification::centred, look.isNeon() ? 0.12f * bypassMix : 0.0f);
 }
