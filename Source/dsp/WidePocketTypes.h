@@ -37,18 +37,28 @@ struct Parameters
     float focus = 50.0f;           // 0 .. 100 %
     float air = 40.0f;             // 0 .. 100 %
     float stability = 50.0f;       // 0 .. 100 %
-    float lowMonoHz = 180.0f;      // 80 .. 600 Hz
     float sibilanceGuard = 60.0f;  // 0 .. 100 %
     float transientFocus = 60.0f;  // 0 .. 100 %
     float outputDb = 0.0f;         // -12 .. +12 dB
 
     Engine engine = Engine::natural;
     Quality quality = Quality::studio;
-
-    bool monoSafe = true;
-    bool centerLock = true;
-    bool autoGain = true;
 };
+
+/*
+    There are deliberately no Mono Safe / Center Lock / Auto Gain switches.
+
+    Those were user-facing symptoms of a design problem, not features:
+
+      - the Mid path is always a pure delay, so the mono sum is always exactly
+        the dry signal. "Mono safe" is structural and cannot be switched off.
+      - the synthesised Side is built in quadrature to the Mid, so the
+        inter-channel level difference is zero by construction. "Center lock"
+        is structural too, and because nothing has to be measured and
+        corrected, the image cannot wander.
+      - the Side never adds broadband level to the sum, so there is nothing
+        for an auto gain stage to chase.
+*/
 
 /** Lock-free snapshot handed to the UI. Never read by the DSP. */
 struct AnalyzerFrame
