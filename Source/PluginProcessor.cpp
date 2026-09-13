@@ -33,8 +33,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidePocketAudioProcessor::la
                                          juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f));
     p.push_back (std::make_unique<Float> (juce::ParameterID { "focus", 1 }, "Focus",
                                          juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f));
+    // Air is a bipolar tone tilt of the Side now: negative darkens it,
+    // positive opens the top octaves, zero keeps the tone of the Mid.
     p.push_back (std::make_unique<Float> (juce::ParameterID { "air", 1 }, "Air",
-                                         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 40.0f));
+                                         juce::NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f));
     p.push_back (std::make_unique<Float> (juce::ParameterID { "stability", 1 }, "Stability",
                                          juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f));
     p.push_back (std::make_unique<Float> (juce::ParameterID { "sibilanceGuard", 1 }, "Sibilance Guard",
