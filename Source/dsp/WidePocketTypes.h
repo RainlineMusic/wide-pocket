@@ -22,7 +22,7 @@ struct Parameters
 {
     float width = 50.0f;           // 0 .. 100 %
     float focus = 50.0f;           // 0 .. 100 %
-    float air = 40.0f;             // 0 .. 100 %
+    float air = 0.0f;              // -100 .. +100 %, 0 = same tone as the Mid
     float stability = 50.0f;       // 0 .. 100 %
     float sibilanceGuard = 60.0f;  // 0 .. 100 %
     float transientFocus = 60.0f;  // 0 .. 100 %
@@ -36,8 +36,9 @@ struct Parameters
 
       - the Mid path is always a pure delay, so the mono sum is always exactly
         the dry signal. "Mono safe" is structural and cannot be switched off.
-      - the synthesised Side is decorrelated and spectrally orthogonalised to
-        the Mid before synthesis, so no time-domain panning servo is needed.
+      - every bin of the synthesised Side is orthogonalised against the same
+        bin of the Mid before synthesis, so the image is centred by
+        construction and no time-domain panning servo is needed.
       - the Side never adds broadband level to the sum, so there is nothing
         for an auto gain stage to chase.
 */
@@ -82,7 +83,7 @@ inline float lerp (float a, float b, float t) noexcept
     return a + (b - a) * t;
 }
 
-/** Equal-power crossfade weights, used when switching engines. */
+/** Equal-power crossfade weights. */
 inline void equalPowerWeights (float position, float& fromWeight, float& toWeight) noexcept
 {
     const float t = clamp01 (position);
