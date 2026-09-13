@@ -113,7 +113,7 @@ private:
 
         // A perceptual width law: full scale approaches Side/Mid ~= 0.8 while
         // the first half of the control remains easy to mix.
-        const float base = 0.82f * std::pow (width, 0.82f);
+        const float base = 0.93f * std::pow (width, 0.82f);
         float weightedSum = 0.0f, weightTotal = 0.0f;
 
         for (int band = 0; band < numBands; ++band)
@@ -126,7 +126,15 @@ private:
             // No low-mono curve is present: all bands may widen.
             const float focusGain = 1.0f - 0.42f * focus * presence;
             const float airGain = 1.0f + 0.38f * air * high;
-            const float gain = clampf (base * focusGain * airGain, 0.0f, StftDecorrelator::maxBandGain);
+
+            // The low bands still widen, but progressively. This is not the
+            // removed 150 Hz mono switch: there is no cutoff and no band is
+            // muted. It prevents sparse sub-fundamental bins from being louder
+            // than the vocal itself when Width is at 100%.
+            const float lowProgress = clamp01 (std::log2 (std::max (centre, 80.0f) / 80.0f) / 3.0f);
+            const float lowProtection = lerp (0.32f, 1.0f, lowProgress * lowProgress * (3.0f - 2.0f * lowProgress));
+            const float gain = clampf (base * focusGain * airGain * lowProtection,
+                                       0.0f, StftDecorrelator::maxBandGain);
             bandWidths[(std::size_t) band] = gain;
 
             // Weight the displayed/applied amount towards the vocal range.
