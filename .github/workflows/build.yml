@@ -23,7 +23,7 @@ jobs:
   macos:
     name: macOS universal
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -34,19 +34,21 @@ jobs:
           path: JUCE
           key: juce-${{ env.JUCE_VERSION }}-macos
 
-      - name: Download JUCE ${{ env.JUCE_VERSION }}
+      - name: Download JUCE
         if: steps.juce-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          curl -fL --retry 3 "https://github.com/juce-framework/JUCE/releases/download/${JUCE_VERSION}/juce-${JUCE_VERSION}-osx.zip" -o juce.zip
+          archive="juce-$JUCE_VERSION-osx.zip"
+          base="https://github.com/juce-framework/JUCE/releases/download"
+          curl -fL --retry 3 "$base/$JUCE_VERSION/$archive" -o juce.zip
           unzip -q juce.zip
-          test -d JUCE/modules/juce_audio_processors || { echo "::error::JUCE ${JUCE_VERSION} layout unexpected"; exit 1; }
+          test -d JUCE/modules/juce_audio_processors || { echo "::error::JUCE $JUCE_VERSION layout unexpected"; exit 1; }
 
       - name: Verify bundled AAX SDK
         run: |
           set -euo pipefail
           if [[ ! -d "JUCE/modules/juce_audio_plugin_client/AAX/SDK/Interfaces" ]]; then
-            echo "::error::JUCE ${JUCE_VERSION} does not contain the bundled AAX SDK; the AAX target cannot be configured"
+            echo "::error::JUCE $JUCE_VERSION does not contain the bundled AAX SDK; the AAX target cannot be configured"
             exit 1
           fi
 
@@ -63,8 +65,11 @@ jobs:
           cmake --build build --config Release --target WidePocketTests
           ctest --test-dir build -C Release --output-on-failure
 
-      - name: Build VST3 and AAX
+      - name: Build VST3 and AAX (Release)
         run: cmake --build build --config Release --target WidePocket_VST3 WidePocket_AAX
+
+      - name: Build AAX (Debug, for local PACE signing)
+        run: cmake --build build --config Debug --target WidePocket_AAX
 
       - name: Ad-hoc sign and inspect
         run: |
@@ -81,7 +86,8 @@ jobs:
       - name: Validate VST3 with pluginval
         run: |
           set -euo pipefail
-          curl -fL --retry 3 "https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/pluginval_macOS.zip" -o pluginval.zip
+          base="https://github.com/Tracktion/pluginval/releases/download"
+          curl -fL --retry 3 "$base/$PLUGINVAL_VERSION/pluginval_macOS.zip" -o pluginval.zip
           unzip -q pluginval.zip
           chmod +x pluginval.app/Contents/MacOS/pluginval
           pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --validate \
@@ -90,8 +96,9 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
-          ditto -c -k --sequesterRsrc --keepParent "build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3" "WidePocket-v${PLUGIN_VERSION}-macOS-Universal-VST3.zip"
-          ditto -c -k --sequesterRsrc --keepParent "build/WidePocket_artefacts/Release/AAX/Wide Pocket.aaxplugin" "WidePocket-v${PLUGIN_VERSION}-macOS-Universal-AAX-Developer.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3" "WidePocket-v$PLUGIN_VERSION-macOS-Universal-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/WidePocket_artefacts/Release/AAX/Wide Pocket.aaxplugin" "WidePocket-v$PLUGIN_VERSION-macOS-Universal-AAX-Developer.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/WidePocket_artefacts/Debug/AAX/Wide Pocket.aaxplugin" "WidePocket-v$PLUGIN_VERSION-macOS-Universal-AAX-Developer-Debug.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -106,6 +113,12 @@ jobs:
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
+        with:
+          name: WidePocket-macOS-Universal-AAX-Developer-Debug
+          path: WidePocket-v*-macOS-Universal-AAX-Developer-Debug.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: validation-log-macos
@@ -115,7 +128,7 @@ jobs:
   windows:
     name: Windows x64
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -126,12 +139,13 @@ jobs:
           path: JUCE
           key: juce-${{ env.JUCE_VERSION }}-windows
 
-      - name: Download JUCE ${{ env.JUCE_VERSION }}
+      - name: Download JUCE
         if: steps.juce-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest "https://github.com/juce-framework/JUCE/archive/refs/tags/$env:JUCE_VERSION.zip" -OutFile juce.zip
+          $base = "https://github.com/juce-framework/JUCE/archive/refs/tags"
+          Invoke-WebRequest "$base/$env:JUCE_VERSION.zip" -OutFile juce.zip
           Expand-Archive juce.zip -DestinationPath juce-unpack
           Move-Item "juce-unpack/JUCE-$env:JUCE_VERSION" JUCE
 
@@ -153,14 +167,18 @@ jobs:
           ctest --test-dir build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build VST3 and AAX
+      - name: Build VST3 and AAX (Release)
         run: cmake --build build --config Release --target WidePocket_VST3 WidePocket_AAX
+
+      - name: Build AAX (Debug, for local PACE signing)
+        run: cmake --build build --config Debug --target WidePocket_AAX
 
       - name: Validate VST3 with pluginval
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest "https://github.com/Tracktion/pluginval/releases/download/$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
+          $base = "https://github.com/Tracktion/pluginval/releases/download"
+          Invoke-WebRequest "$base/$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval-unpack
           $validator = (Get-ChildItem pluginval-unpack -Recurse -Filter pluginval.exe | Select-Object -First 1).FullName
           if (-not $validator) { throw "pluginval executable not found" }
@@ -172,6 +190,7 @@ jobs:
         run: |
           Compress-Archive -Path "build/WidePocket_artefacts/Release/VST3/Wide Pocket.vst3" -DestinationPath "WidePocket-v$env:PLUGIN_VERSION-Windows-x64-VST3.zip"
           Compress-Archive -Path "build/WidePocket_artefacts/Release/AAX/Wide Pocket.aaxplugin" -DestinationPath "WidePocket-v$env:PLUGIN_VERSION-Windows-x64-AAX-Developer.zip"
+          Compress-Archive -Path "build/WidePocket_artefacts/Debug/AAX/Wide Pocket.aaxplugin" -DestinationPath "WidePocket-v$env:PLUGIN_VERSION-Windows-x64-AAX-Developer-Debug.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -183,6 +202,12 @@ jobs:
         with:
           name: WidePocket-Windows-x64-AAX-Developer
           path: WidePocket-v*-Windows-x64-AAX-Developer.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WidePocket-Windows-x64-AAX-Developer-Debug
+          path: WidePocket-v*-Windows-x64-AAX-Developer-Debug.zip
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
