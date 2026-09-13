@@ -97,7 +97,6 @@ public:
         for (int band = 0; band < numBands; ++band)
         {
             const float permission = clamp01 (spatialMask[(std::size_t) band]);
-            const float emphasis = focusWeight (band, focusNorm);
 
             // A strongly voiced, tonal passage is widened conservatively; a
             // breathy or consonant passage can take much more.
@@ -105,8 +104,11 @@ public:
             const float transientRestraint = 1.0f - 0.85f * frame.transient
                                                  * clamp01 (parameters.transientFocus * 0.01f);
 
+            // Focus is applied by the engine as a real band gain, so it is
+            // deliberately not duplicated here: two mild curves multiplied
+            // together is exactly why Focus used to do almost nothing.
             decision.bandWidth[(std::size_t) band] =
-                clamp01 (widthNorm * permission * emphasis * voiceRestraint * transientRestraint);
+                clamp01 (widthNorm * permission * voiceRestraint * transientRestraint);
         }
 
         decision.globalTrim = 1.0f - 0.5f * frame.plosive;
@@ -155,15 +157,6 @@ public:
     const std::array<float, numBands>& getBandDepths() const noexcept { return depths; }
     float getGlobalTrim() const noexcept { return trim.value(); }
     bool isModelActive() const noexcept { return modelActive; }
-
-    /** Emphasis curve: low focus favours the upper bands, high focus the body. */
-    static float focusWeight (int band, float focusNorm) noexcept
-    {
-        const float centre = lerp (7.5f, 3.0f, focusNorm); // band index
-        const float spread = 4.5f;
-        const float distance = ((float) band - centre) / spread;
-        return clamp01 (0.35f + 0.65f * std::exp (-distance * distance));
-    }
 
 private:
     static bool isDecisionUsable (const MlDecision& decision) noexcept
