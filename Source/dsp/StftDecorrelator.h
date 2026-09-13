@@ -1,4 +1,4 @@
-/* Wide Pocket - Natural v0.2 decorrelator: static quadrature rotation, no recursive tail. */
+/* Wide Pocket - Natural v0.3 decorrelator: static per-bin quadrature, smooth ducking. */
 #pragma once
 #include "Fft.h"
 #include "VocalAnalyzer.h"
@@ -11,43 +11,36 @@
 namespace wp
 {
 
-/*  Why this version has no memory at all
-    -------------------------------------
-    The previous build made the Side candidate with a cascade of four
-    recursive Schroeder allpass stages running in the STFT bin domain, plus
-    a four frame pre delay. Both stages store energy: the cascade feeds
-    back over 1, 2, 3 and 5 frames (up to about 13 ms at 48 kHz) and the
-    pre delay is a discrete ~10 ms echo. Summed back into L and R that is
-    heard exactly as reported, a small metallic room around the voice, and
-    it is worst on a male voice because the dense low harmonics keep
-    re-exciting the tail.
+/*  What changed in v0.3
+    --------------------
+    1. Orthogonalisation is now per bin instead of per band. Summing the
+       in-phase part over a whole band only guarantees that the *average*
+       level difference of the band is zero; inside the band individual bins
+       keep a residual in-phase component, and as the spectrum moves that
+       residual wanders. Measured on a real vocal take that was a -0.13 dB
+       mean and up to 1.4 dB short-term lean. Removing the in-phase part bin
+       by bin makes every bin exactly quadrature to the Mid, so
+       Re{M * conj(S)} = 0 everywhere and the image cannot move at all.
 
-    Here the Side candidate is the Mid spectrum multiplied by a frozen
-    phase rotation. The plugin is then a pure static allpass: no feedback,
-    no echo, group delay bounded to a few tens of samples, the mono sum
-    untouched, and nothing left that can ring.
+       Decorrelation then comes entirely from the sign of the quadrature,
+       which is re-drawn every signFlipBins bins. That is enough: both signs
+       are orthogonal to the Mid, so flipping them costs nothing in centring
+       but breaks the Hilbert relationship that would otherwise make the Side
+       a predictable copy of the Mid.
 
-    The rotation sits on quadrature (+-90 degrees) and only wanders a
-    bounded amount around it. That matters: the band orthogonalisation below
-    removes whatever part of the candidate is in phase with the Mid, so a
-    rotation that sits near 0 degrees in any region of the spectrum would
-    leave almost no Side there. Quadrature is the point where the candidate
-    is already orthogonal to the Mid, so the full magnitude survives.
-
-    The sign of that quadrature alternates across small groups of bins.
-    Using +90 degrees everywhere keeps the energy but makes the Side a plain
-    Hilbert transform of the Mid, and a Hilbert copy with a consistent sign
-    pushes the short term image off centre (it measured 0.6 dB of average
-    50 ms level difference and 1.8 dB of gain on a held tone). Alternating
-    the sign leaves every bin orthogonal to the Mid while cancelling that
-    systematic lean, and grouping the flips (rather than flipping every bin)
-    keeps neighbouring bins coherent enough that the Side does not cancel
-    itself inside a band. */
+    2. The transient handling is no longer a hard gate. Zeroing the Side for
+       eight frames made the widening stop dead for ~21 ms on every onset,
+       which is exactly the "sudden stops in the Side" that was reported
+       (0.9 % of all active frames had no Side at all). It is now a smooth
+       duck: the depth is set by the Transient control, the attack is a few
+       milliseconds and the release is slow, so the width dips and recovers
+       instead of switching off.
+*/
 class StftDecorrelator
 {
 public:
     static constexpr int numBands = VocalAnalyzer::numMaskBands;
-    static constexpr float maxBandGain = 1.25f;
+    static constexpr float maxBandGain = 2.5f;
 
     void prepare (double sr, int = 8)
     {
@@ -69,12 +62,15 @@ public:
         processedSpectrum.assign (numBins, {});
         binBand.assign (numBins, 0);
 
-        buildRotationTable();
+        buildSignTable();
         buildBandTable();
 
         const double frameRate = sampleRate / hopSize;
         for (auto& x : bandGain)
             x.reset (frameRate, 240, 0);
+
+        duckAttack = 1.0f - std::exp (-1.0f / (float) std::max (1.0, frameRate * 0.004));  // ~4 ms
+        duckRelease = 1.0f - std::exp (-1.0f / (float) std::max (1.0, frameRate * 0.090)); // ~90 ms
 
         reset();
     }
@@ -89,6 +85,7 @@ public:
         previousTransientEnergy = smoothedTransientEnergy = 1e-9f;
         holdFrames = inhibitFrames = 0;
         transientActive = false;
+        duck = 1.0f;
     }
 
     void setBandGains (const std::array<float, numBands>& g) noexcept
@@ -106,8 +103,11 @@ public:
     void setGainSmoothingMs (float ms) noexcept
     {
         for (auto& x : bandGain)
-            x.setTime (sampleRate / hopSize, clampf (ms, 120.0f, 600.0f));
+            x.setTime (sampleRate / hopSize, clampf (ms, 60.0f, 600.0f));
     }
+
+    /** How much the Side is ducked on an onset. 0 = no ducking, 1 = silent. */
+    void setDuckDepth (float depth) noexcept { duckDepth = clamp01 (depth); }
 
     float process (float x) noexcept
     {
@@ -123,6 +123,7 @@ public:
     int getFrameSize() const noexcept { return fftSize; }
     int getHopSize() const noexcept { return hopSize; }
     bool isTransientActive() const noexcept { return transientActive; }
+    float getDuck() const noexcept { return duck; }
 
 private:
     void processFrame() noexcept
@@ -133,42 +134,25 @@ private:
         fft.forwardReal (workFrame.data(), directSpectrum.data());
         updateTransientState();
 
-        /* Static allpass: same rotation on every frame, so nothing is
-           modulated and nothing decays. */
-        for (int b = 0; b < numBins; ++b)
-            processedSpectrum[(size_t) b] = directSpectrum[(size_t) b] * rotation[(size_t) b];
-
         std::array<float, numBands> g {};
         for (int b = 0; b < numBands; ++b)
             g[(size_t) b] = bandGain[(size_t) b].next();
 
-        std::array<double, numBands> cross {}, direct {};
-        for (int b = 1; b < numBins - 1; ++b)
-        {
-            const auto x = directSpectrum[(size_t) b];
-            const auto y = processedSpectrum[(size_t) b];
-            const int band = binBand[(size_t) b];
-            cross[(size_t) band] += (double) (x.real() * y.real() + x.imag() * y.imag());
-            direct[(size_t) band] += (double) std::norm (x);
-        }
-
-        /* Exact broad band orthogonalisation: keeps the centre locked without
-           a time domain servo. Because the rotation is already close to
-           quadrature, the removed in phase part is small and the Side keeps
-           the spectrum of the Mid. */
-        for (int b = 1; b < numBins - 1; ++b)
-        {
-            const int band = binBand[(size_t) b];
-            const float p = clampf ((float) (cross[(size_t) band] / std::max (1e-12, direct[(size_t) band])), -1.5f, 1.5f);
-            processedSpectrum[(size_t) b] -= p * directSpectrum[(size_t) b];
-        }
-
         processedSpectrum[0] = {};
         processedSpectrum[(size_t) (numBins - 1)] = {};
 
-        const float gate = transientActive ? 0.0f : 1.0f;
+        /* Exact per-bin quadrature: S[k] = j * s[k] * M[k], with s[k] = +-1.
+           Re{M[k] * conj(S[k])} is then identically zero in every bin, and
+           since the inter-channel level difference of L = M + S, R = M - S is
+           exactly 4 * sum_k Re{M * conj(S)}, the image is centred for any set
+           of real band gains. Nothing here can move the image. */
         for (int b = 1; b < numBins - 1; ++b)
-            processedSpectrum[(size_t) b] *= gate * g[(size_t) binBand[(size_t) b]];
+        {
+            const auto m = directSpectrum[(size_t) b];
+            const float s = sign[(size_t) b];
+            const float gain = duck * g[(size_t) binBand[(size_t) b]];
+            processedSpectrum[(size_t) b] = std::complex<float> (-s * m.imag(), s * m.real()) * gain;
+        }
 
         fft.inverseReal (processedSpectrum.data(), workFrame.data());
 
@@ -195,8 +179,8 @@ private:
 
         if (onset && inhibitFrames == 0)
         {
-            holdFrames = 8;
-            inhibitFrames = 56;
+            holdFrames = 6;
+            inhibitFrames = 40;
         }
 
         if (holdFrames > 0)
@@ -205,33 +189,32 @@ private:
             --inhibitFrames;
 
         transientActive = holdFrames > 0;
+
+        /* Smooth duck instead of a hard gate: fast in, slow out, and never
+           deeper than the Transient control asks for. */
+        const float target = transientActive ? 1.0f - duckDepth : 1.0f;
+        const float coefficient = target < duck ? duckAttack : duckRelease;
+        duck += coefficient * (target - duck);
+        duck = clampf (duck, 0.0f, 1.0f);
     }
 
-    /* A frozen bounded random walk around quadrature, with the sign of the
-       quadrature re-drawn every signFlipBins bins. The per bin step and the
-       total excursion are both bounded, so the equivalent impulse response
-       stays inside a small part of the analysis window (a few tens of
-       samples of group delay at 48 kHz) and cannot smear transients or build
-       a tail, while still being different enough across frequency to
-       decorrelate. */
-    void buildRotationTable()
+    /* A frozen +-1 sign per group of bins. Magnitudes are untouched, so the
+       Side keeps the spectrum of the Mid exactly, and the equivalent impulse
+       response stays short: no tail, no echo, no smearing. */
+    void buildSignTable()
     {
-        rotation.assign ((size_t) numBins, { 0.0f, 1.0f });
+        sign.assign ((size_t) numBins, 1.0f);
         std::uint32_t state = 0x9e3779b9u;
-        float deviation = 0.0f;
-        bool positive = true;
+        float current = 1.0f;
 
         for (int b = 0; b < numBins; ++b)
         {
             state = state * 1664525u + 1013904223u;
-            const float uniform = (float) ((state >> 8) & 0xffffffu) / (float) 0xffffff - 0.5f;
-            deviation = clampf (deviation + 2.0f * maxPhaseStep * uniform, -maxDeviation, maxDeviation);
 
             if (b % signFlipBins == 0)
-                positive = ((state >> 23) & 1u) != 0u;
+                current = (((state >> 23) & 1u) != 0u) ? 1.0f : -1.0f;
 
-            const float sign = positive ? 1.0f : -1.0f;
-            rotation[(size_t) b] = std::polar (1.0f, sign * (0.5f * (float) kPi + deviation));
+            sign[(size_t) b] = current;
         }
     }
 
@@ -246,21 +229,23 @@ private:
         }
     }
 
-    static constexpr float maxPhaseStep = 0.45f;
-    static constexpr float maxDeviation = 0.5f;
-    static constexpr int signFlipBins = 7;
+    // Five bins per sign group measured best: wider groups approach a plain
+    // Hilbert transform (which correlates with the Mid again), narrower ones
+    // put too many sign boundaries inside the leakage of a single partial.
+    static constexpr int signFlipBins = 5;
 
     double sampleRate = 48000.0;
     int fftSize = 256, hopSize = 128, numBins = 129;
     Fft fft;
-    std::vector<float> window, inputFrame, workFrame, overlap, pending;
-    std::vector<std::complex<float>> directSpectrum, processedSpectrum, rotation;
+    std::vector<float> window, inputFrame, workFrame, overlap, pending, sign;
+    std::vector<std::complex<float>> directSpectrum, processedSpectrum;
     std::vector<int> binBand;
     std::array<Smoother, numBands> bandGain {};
     int fill = 0, pendingIndex = 0;
     float previousTransientEnergy = 1e-9f, smoothedTransientEnergy = 1e-9f;
     int holdFrames = 0, inhibitFrames = 0;
     bool transientActive = false;
+    float duck = 1.0f, duckDepth = 0.5f, duckAttack = 0.5f, duckRelease = 0.05f;
 };
 
 } // namespace wp
