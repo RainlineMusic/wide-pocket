@@ -76,6 +76,7 @@ private:
     std::atomic<float>* sibilanceGuard = nullptr;
     std::atomic<float>* transientFocus = nullptr;
     std::atomic<float>* outputGain = nullptr;
+    std::atomic<float>* invertSide = nullptr;
     std::atomic<float>* bypass = nullptr;
 
     // Dry path used while bypassed, so switching is click free and the

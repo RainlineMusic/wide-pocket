@@ -19,6 +19,7 @@ WidePocketAudioProcessor::WidePocketAudioProcessor()
     sibilanceGuard = parameters.getRawParameterValue ("sibilanceGuard");
     transientFocus = parameters.getRawParameterValue ("transientFocus");
     outputGain = parameters.getRawParameterValue ("output");
+    invertSide = parameters.getRawParameterValue ("invertSide");
     bypass = parameters.getRawParameterValue ("bypass");
 }
 
@@ -49,6 +50,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidePocketAudioProcessor::la
     // No Mono Safe / Center Lock / Auto Gain parameters. The mono sum and the
     // centred image are structural properties of the engine now, so there is
     // nothing to switch and nothing for the user to get wrong.
+    //
+    // Side polarity is the one exception worth a switch. The mono sum does not
+    // contain the Side at all, so this cannot have a mono consequence: it only
+    // decides which ear leads in phase, so a widened mono source can be made
+    // to lean the same way it is panned instead of fighting the pan.
+    p.push_back (std::make_unique<Bool> (juce::ParameterID { "invertSide", 1 }, "Side Polarity", false));
     p.push_back (std::make_unique<Bool> (juce::ParameterID { "bypass", 1 }, "Bypass", false));
 
     return { p.begin(), p.end() };
@@ -102,6 +109,7 @@ void WidePocketAudioProcessor::pushParameters (bool bypassed)
     p.sibilanceGuard = sibilanceGuard->load();
     p.transientFocus = transientFocus->load();
     p.outputDb = bypassed ? 0.0f : outputGain->load();
+    p.invertSide = invertSide->load() > 0.5f;
     engine.setParameters (p);
 }
 
