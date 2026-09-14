@@ -57,6 +57,20 @@ private:
     int decimals;
 };
 
+/** Compact round toggle carrying the polarity symbol, sized like the small
+    Output dial so the two flank the big dials symmetrically. */
+class PolarityButton final : public juce::Button
+{
+public:
+    PolarityButton (PocketLook&, juce::uint32 accent);
+
+    void paintButton (juce::Graphics&, bool, bool) override;
+
+private:
+    PocketLook& look;
+    juce::uint32 accent;
+};
+
 class WidePocketAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                             private juce::Timer
 {
@@ -88,11 +102,12 @@ private:
     ModernDial widthDial { look, "Width", "Stereo spread", "%", 0xff5987ff };
     ModernDial airDial { look, "Air", "Dark to bright", "%", 0xff32d4cb };
     ModernDial outputDial { look, "Output", "dB", "", 0xfff1e84b, true, 2 };
+    PolarityButton polarityButton { look, 0xff5987ff };
 
     juce::TextButton settingsButton { "settings" }, bypassButton { "power" };
 
     std::unique_ptr<SliderAttachment> widthAttach, airAttach, outputAttach;
-    std::unique_ptr<ButtonAttachment> bypassAttach;
+    std::unique_ptr<ButtonAttachment> bypassAttach, polarityAttach;
 
     std::unique_ptr<juce::PropertiesFile> preferences;
 
@@ -102,6 +117,11 @@ private:
     // cloud, short enough to react immediately.
     std::array<juce::Point<float>, 2048> scatter {};
     int scatterCursor = 0, scatterFilled = 0;
+
+    // Correlation trail: one sample per displayed frame, so 240 entries are
+    // four seconds of history at 60 fps.
+    std::array<float, 240> correlationTrail {};
+    int correlationCursor = 0, correlationFilled = 0;
 
     bool ready = false, capturingBlur = false, bypassTarget = false;
     float bypassMix = 0.0f;

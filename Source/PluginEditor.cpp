@@ -313,9 +313,26 @@ void ModernDial::paint (juce::Graphics& g)
 
     juce::String value;
     if (unit == "Hz")
+    {
         value = hzLabel (getValue());
+    }
     else
-        value = juce::String (getValue(), decimals) + unit;
+    {
+        // Quantise before formatting. juce::String (double, 0) prints the
+        // shortest round-trip form, which on macOS turned a residual 1.5e-08
+        // into "1.49012...", and a -1e-07 output value printed as "-0.00".
+        // Rounding first makes both platforms show the same text and the
+        // minus sign appear only when the value really is below zero.
+        const double quantum = std::pow (10.0, -double (decimals));
+        double v = std::round (getValue() / quantum) * quantum;
+
+        if (std::abs (v) < quantum * 0.5)
+            v = 0.0;
+
+        value = (decimals <= 0 ? juce::String (juce::roundToInt (v))
+                               : juce::String (v, decimals))
+                + unit;
+    }
 
     if (compact)
     {
@@ -329,6 +346,74 @@ void ModernDial::paint (juce::Graphics& g)
         text (g, value, { c.x - r, c.y - 19 * s, 2 * r, 43 * s }, 33 * s, look.ink(), juce::Justification::centred);
         text (g, subtitle, { c.x - r, c.y + 28 * s, 2 * r, 23 * s }, 13 * s, look.muted(), juce::Justification::centred);
     }
+}
+
+// ---------------------------------------------------------------------------
+// PolarityButton
+// ---------------------------------------------------------------------------
+
+PolarityButton::PolarityButton (PocketLook& l, juce::uint32 a)
+    : juce::Button ("Polarity"), look (l), accent (a)
+{
+    setClickingTogglesState (true);
+    setWantsKeyboardFocus (true);
+}
+
+void PolarityButton::paintButton (juce::Graphics& g, bool hover, bool down)
+{
+    // Drawn on the same 100 px grid as the compact Output dial so the two read
+    // as a matched pair on either side of the big dials.
+    const float s = float (getWidth()) / 100.0f;
+    const float r = 34.0f * s;
+    const float ring = r + 5.0f * s;
+    const juce::Point<float> c (float (getWidth()) * 0.5f, float (getHeight()) * 0.5f);
+    const auto face = juce::Rectangle<float> (2 * r, 2 * r).withCentre (c);
+    const bool on = getToggleState();
+    const auto a = look.isNeon() ? juce::Colour (accent) : look.pick (0, 0xffe8e8e8, 0xff303235);
+
+    if (look.isNeon() && on)
+        for (int i = 3; i > 0; --i)
+        {
+            g.setColour (juce::Colour (accent).withAlpha (0.045f));
+            g.fillEllipse (face.expanded (float (i) * 2 * s));
+        }
+
+    if (look.isNeon())
+        g.setGradientFill (juce::ColourGradient (look.pick (0xff233349, 0, 0), c.x - r, c.y - r,
+                                                look.pick (0xff060b12, 0, 0), c.x + r, c.y + r, false));
+    else
+        g.setColour (look.pick (0, down ? 0xff2f2f2f : 0xff252525, down ? 0xffeeeeee : 0xfff8f8f8));
+
+    g.fillEllipse (face);
+    g.setColour (look.pick (hover ? 0xff4e78ff : 0xff344963, hover ? 0xff777777 : 0xff555555,
+                            hover ? 0xff85878b : 0xffbabcc0));
+    g.drawEllipse (face, s);
+
+    // Full ring when engaged, dim arc when not: the state has to be readable
+    // at a glance next to the Output dial's arc.
+    juce::Path track;
+    track.addCentredArc (c.x, c.y, ring, ring, 0, 0.0f, juce::MathConstants<float>::twoPi, true);
+    stroke (g, track, look.pick (0xff050a11, 0xff101010, 0xffc7c8ca), 4.0f * s);
+
+    if (on)
+    {
+        juce::Path lit;
+        lit.addCentredArc (c.x, c.y, ring, ring, 0, 0.0f, juce::MathConstants<float>::twoPi, true);
+        glowStroke (g, lit, a, 3.5f * s, look.isNeon());
+    }
+
+    // The polarity symbol: a circle with a slash, which is what the ear
+    // expects to see on a phase invert control.
+    const float glyph = 13.0f * s;
+    const auto ink = on ? (look.isNeon() ? a.brighter (0.25f) : look.ink()) : look.muted();
+
+    g.setColour (ink);
+    g.drawEllipse (c.x - glyph, c.y - glyph - 3.0f * s, glyph * 2.0f, glyph * 2.0f, 1.8f * s);
+    g.drawLine (c.x - glyph * 0.78f, c.y + glyph * 0.78f - 3.0f * s,
+                c.x + glyph * 0.78f, c.y - glyph * 0.78f - 3.0f * s, 1.8f * s);
+
+    text (g, "Phase", { c.x - r, c.y + 15.0f * s, 2 * r, 13.0f * s }, 10.0f * s, look.muted(),
+          juce::Justification::centred);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +440,7 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
     setResizable (true, true);
 
     for (auto* c : std::initializer_list<juce::Component*> { &widthDial, &airDial, &outputDial,
-                                                            &settingsButton, &bypassButton })
+                                                            &polarityButton, &settingsButton, &bypassButton })
         addAndMakeVisible (c);
 
     widthAttach = std::make_unique<SliderAttachment> (p.parameters, "width", widthDial);
@@ -366,6 +451,7 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
 
     bypassButton.setClickingTogglesState (true);
     bypassAttach = std::make_unique<ButtonAttachment> (p.parameters, "bypass", bypassButton);
+    polarityAttach = std::make_unique<ButtonAttachment> (p.parameters, "invertSide", polarityButton);
 
     // The bypass overlay has to appear on the very click, with no ramp: the
     // previous version eased bypassMix in the timer, which read as lag.
@@ -387,6 +473,9 @@ WidePocketAudioProcessorEditor::WidePocketAudioProcessorEditor (WidePocketAudioP
     widthDial.setTooltip ("Stereo spread of the synthesised Side signal. The mono sum never changes.");
     airDial.setTooltip ("Tone of the sides: left of centre is darker, right of centre is brighter. Pure band gain, so the image cannot move.");
     outputDial.setTooltip ("Output gain. Double-click resets to 0 dB.");
+    polarityButton.setTooltip ("Flips the polarity of the synthesised Side. The mono sum is unchanged; "
+                              "it mirrors which side the widened image leans to, so it can be matched "
+                              "to the pan of the source.");
     bypassButton.setTooltip ("Enable / bypass processing");
     settingsButton.setTooltip ("Settings");
 
@@ -525,11 +614,14 @@ void WidePocketAudioProcessorEditor::resized()
     settingsButton.setBounds (scaled (886, 22, 40, 40));
     bypassButton.setBounds (scaled (936, 22, 40, 40));
 
-    // Right hand column: the two big dials inside the single outlined panel,
-    // with the small Output between them.
-    widthDial.setBounds (scaled (775, 103, 170, 187));
-    airDial.setBounds (scaled (775, 312, 170, 187));
-    outputDial.setBounds (scaled (878, 259, 78, 78));
+    // Right hand column: the two big dials are centred in the outlined panel
+    // (centre x = 871), and the two small controls sit between them at equal
+    // distance from that centre: Phase on the left, Output on the right.
+    widthDial.setBounds (scaled (786, 103, 170, 187));
+    airDial.setBounds (scaled (786, 312, 170, 187));
+    polarityButton.setBounds (scaled (780, 262, 78, 78));
+    outputDial.setBounds (scaled (884, 262, 78, 78));
+    polarityButton.toFront (false);
     outputDial.toFront (false);
 
     blurArea = scaled (12, 82, 976, 437);
@@ -554,6 +646,13 @@ void WidePocketAudioProcessorEditor::timerCallback()
         scatterCursor = (scatterCursor + 1) % (int) scatter.size();
         scatterFilled = juce::jmin ((int) scatter.size(), scatterFilled + 1);
     }
+
+    // One correlation sample per frame builds the fading trail on the scale,
+    // so the movement over the last few seconds is readable, not just the
+    // instantaneous value.
+    correlationTrail[(std::size_t) correlationCursor] = juce::jlimit (-1.0f, 1.0f, latest.correlation);
+    correlationCursor = (correlationCursor + 1) % (int) correlationTrail.size();
+    correlationFilled = juce::jmin ((int) correlationTrail.size(), correlationFilled + 1);
 
     const bool bypassed = audioProcessor.displayBypass.load (std::memory_order_relaxed)
                           || bypassButton.getToggleState();
@@ -677,7 +776,13 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
               { scaleArea.getX(), scaleArea.getY() + radius * 0.5f * float (i) - 8.0f * s, 20.0f * s, 16.0f * s },
               9.5f * s, secondary, juce::Justification::centredRight, textGlow);
 
-    const auto accent = look.isNeon() ? juce::Colour (0xff32d4cb) : look.pick (0, 0xffd8d8d8, 0xff3a3c40);
+    // The white theme needs a much darker, slightly larger point than the two
+    // dark themes: a light teal dot on white was barely visible.
+    const auto accent = look.pick (0xff32d4cb, 0xffd8d8d8, 0xff13525a);
+    const bool light = look.theme == PocketTheme::SolidWhite;
+    const float dotRadius = (light ? 1.7f : 1.0f) * juce::jmax (1.0f, s);
+    const float dotFloor = light ? 0.14f : 0.05f;
+    const float dotRange = light ? 0.80f : 0.55f;
     const int count = scatterFilled;
 
     const auto indexOf = [this, count] (int i)
@@ -716,15 +821,53 @@ void WidePocketAudioProcessorEditor::vectorScope (juce::Graphics& g, juce::Recta
         // Newest points are brightest, which is what makes fast movement
         // readable without slowing the display down.
         const float age = float (i) / float (juce::jmax (1, count));
-        g.setColour (accent.withAlpha (0.05f + 0.55f * age * age));
-        g.fillEllipse (position.x - 1.0f, position.y - 1.0f, 2.0f, 2.0f);
+        g.setColour (accent.withAlpha (dotFloor + dotRange * age * age));
+        g.fillEllipse (position.x - dotRadius, position.y - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
+    }
+
+    // Correlation: a fading trail along the scale, newest at full opacity.
+    // The trail is drawn as a thin ribbon so a slow drift and a fast jump look
+    // different from each other.
+    const float trackX = scaleArea.getX() - 4.0f * s;
+    const auto correlationY = [&scaleArea, radius] (float value)
+    {
+        return scaleArea.getY() + radius * 0.5f * (1.0f - juce::jlimit (-1.0f, 1.0f, value));
+    };
+
+    g.setColour (grid.withAlpha (0.5f));
+    g.fillRect (juce::Rectangle<float> (trackX - 0.5f * s, scaleArea.getY(), juce::jmax (1.0f, s), radius));
+
+    const int trailCount = correlationFilled;
+    const auto trailAt = [this, trailCount] (int i)
+    {
+        return correlationTrail[(std::size_t) ((correlationCursor - trailCount + i
+                                                + (int) correlationTrail.size())
+                                               % (int) correlationTrail.size())];
+    };
+
+    for (int i = 0; i < trailCount; ++i)
+    {
+        const float age = float (i) / float (juce::jmax (1, trailCount));
+        const float alpha = (light ? 0.10f : 0.06f) + (light ? 0.80f : 0.70f) * age * age;
+        const float width = (2.0f + 4.0f * age) * s;
+        const float y = correlationY (trailAt (i));
+
+        g.setColour (accent.withAlpha (alpha));
+        g.fillRect (juce::Rectangle<float> (trackX - width * 0.5f, y - 0.75f * s, width, juce::jmax (1.0f, 1.5f * s)));
     }
 
     const float correlation = juce::jlimit (-1.0f, 1.0f, latest.correlation);
-    g.setColour (accent.withAlpha (0.9f));
-    g.fillEllipse (scaleArea.getX() - 6.0f * s,
-                   scaleArea.getY() + radius * 0.5f * (1.0f - correlation) - 2.0f,
-                   4.0f * s, 4.0f * s);
+    const float headY = correlationY (correlation);
+    const float headRadius = 3.0f * s;
+
+    if (look.isNeon())
+    {
+        g.setColour (accent.withAlpha (0.25f));
+        g.fillEllipse (trackX - headRadius * 2.0f, headY - headRadius * 2.0f, headRadius * 4.0f, headRadius * 4.0f);
+    }
+
+    g.setColour (accent.withAlpha (light ? 1.0f : 0.95f));
+    g.fillEllipse (trackX - headRadius, headY - headRadius, headRadius * 2.0f, headRadius * 2.0f);
 }
 
 void WidePocketAudioProcessorEditor::paint (juce::Graphics& g)
