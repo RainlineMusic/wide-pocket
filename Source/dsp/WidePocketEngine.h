@@ -39,6 +39,7 @@ public:
         correlationGuard.prepare (sampleRate);
         outputGainSmoother.reset (sampleRate, 20.0f, dbToGain (parameters.outputDb));
         guardSmoother.reset (sampleRate, 90.0f, 1.0f);
+        polaritySmoother.reset (sampleRate, 12.0f, parameters.invertSide ? -1.0f : 1.0f);
         reset();
     }
 
@@ -51,6 +52,7 @@ public:
         renderer.reset (1.0f, 1.0f);
         correlationGuard.reset();
         guardSmoother.snapTo (1.0f);
+        polaritySmoother.snapTo (parameters.invertSide ? -1.0f : 1.0f);
         snapshot = AnalyzerFrame {};
         bandWidths.fill (0.0f);
     }
@@ -59,6 +61,10 @@ public:
     {
         parameters = p;
         outputGainSmoother.setTarget (dbToGain (clampf (parameters.outputDb, -24.0f, 12.0f)));
+
+        // A 12 ms ramp through zero: fast enough to feel instant, slow enough
+        // that flipping polarity while audio is running cannot click.
+        polaritySmoother.setTarget (parameters.invertSide ? -1.0f : 1.0f);
 
         const float stability = clamp01 (parameters.stability * 0.01f);
 
@@ -86,7 +92,8 @@ public:
             decorrelator.setTransientAmount (analyzer.getFrame().transient * 1.5f);
             const float generated = decorrelator.process (ms.mid);
             const float mid = midDelay.process (ms.mid);
-            const float side = sideDelay.process (ms.side) + guardSmoother.next() * generated;
+            const float side = (sideDelay.process (ms.side) + guardSmoother.next() * generated)
+                               * polaritySmoother.next();
 
             const auto out = renderer.render (mid, side);
             correlationGuard.measure (out.left, out.right);
@@ -196,7 +203,7 @@ private:
     DelayLine midDelay, sideDelay;
     MidSideRenderer renderer;
     CorrelationGuard correlationGuard;
-    Smoother guardSmoother, outputGainSmoother;
+    Smoother guardSmoother, outputGainSmoother, polaritySmoother;
     float averageBandGain = 0.0f;
     AnalyzerFrame snapshot;
     std::array<float, numBands> bandWidths {};

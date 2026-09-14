@@ -27,6 +27,12 @@ struct Parameters
     float sibilanceGuard = 60.0f;  // 0 .. 100 %
     float transientFocus = 60.0f;  // 0 .. 100 %
     float outputDb = 0.0f;         // -24 .. +12 dB
+
+    // Polarity of the Side signal. The mono sum is 2 * gM * M and carries no
+    // Side at all, so flipping this cannot change the mono sum by a single
+    // sample; it only mirrors which ear leads in phase, which is what the ear
+    // reads as direction below roughly 1.5 kHz.
+    bool invertSide = false;
 };
 
 /*
