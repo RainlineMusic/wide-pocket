@@ -394,6 +394,95 @@ void testMonoCompatibility()
     checkGreater (side, 0.0, "the two channels stay positively correlated (no phasey mush)");
 }
 
+void testSidePolarityIsMonoNeutral()
+{
+    beginCase ("Engine: Side polarity mirrors the image without touching mono");
+
+    auto input = makeVoiceLike (65536);
+    auto parameters = defaultParameters();
+    parameters.width = 100.0f;
+
+    WidePocketEngine normal, flipped;
+    normal.prepare (kSampleRate, 512);
+    flipped.prepare (kSampleRate, 512);
+
+    normal.setParameters (parameters);
+    parameters.invertSide = true;
+    flipped.setParameters (parameters);
+    // The polarity smoother is only snapped on reset, so reset after setting
+    // the parameter to measure the steady state and not the 12 ms ramp.
+    flipped.reset();
+
+    auto a = runEngine (normal, input);
+    auto b = runEngine (flipped, input);
+
+    const std::size_t latency = (std::size_t) normal.getLatencySamples();
+    const std::size_t from = latency * 3;
+
+    double worstSum = 0.0, worstMirror = 0.0, sideEnergy = 0.0;
+
+    for (std::size_t i = from; i < input.size(); ++i)
+    {
+        // 1. The mono sum is identical with and without the flip, because the
+        //    sum carries no Side at all.
+        const double sumA = (double) a.left[i] + (double) a.right[i];
+        const double sumB = (double) b.left[i] + (double) b.right[i];
+        worstSum = std::max (worstSum, std::abs (sumA - sumB));
+
+        // 2. The flipped output is the exact mirror image: L and R swap.
+        worstMirror = std::max (worstMirror, std::abs ((double) b.left[i] - (double) a.right[i]));
+        worstMirror = std::max (worstMirror, std::abs ((double) b.right[i] - (double) a.left[i]));
+
+        const double side = 0.5 * ((double) a.left[i] - (double) a.right[i]);
+        sideEnergy += side * side;
+    }
+
+    checkNear (worstSum, 0.0, 1.0e-6, "the mono sum is bit identical with the polarity flipped");
+    checkNear (worstMirror, 0.0, 1.0e-6, "flipping the Side mirrors L and R exactly");
+    checkGreater (sideEnergy, 1.0, "there was a real Side signal to flip");
+
+    // 3. The amount of widening is unchanged: only the sign moves, so the
+    //    absolute correlation must stay the same.
+    const auto corrA = correlation (a.left, a.right, from);
+    const auto corrB = correlation (b.left, b.right, from);
+    checkNear (corrB, corrA, 1.0e-5, "correlation, and therefore the width, is unchanged");
+
+    // 4. Switching polarity while audio runs must not click: the ramp is a
+    //    12 ms glide, so the sample to sample step stays small.
+    WidePocketEngine live;
+    live.prepare (kSampleRate, 512);
+    auto running = parameters;
+    running.invertSide = false;
+    live.setParameters (running);
+
+    std::vector<float> l (input), r (input);
+    const int half = (int) (input.size() / 2);
+
+    for (int position = 0; position < (int) input.size(); position += 128)
+    {
+        const int count = (int) std::min ((std::size_t) 128, input.size() - (std::size_t) position);
+
+        if (position == half)
+        {
+            running.invertSide = true;
+            live.setParameters (running);
+        }
+
+        live.process (l.data() + position, r.data() + position, count);
+    }
+
+    double worstStep = 0.0;
+    for (std::size_t i = (std::size_t) half - 2048; i < (std::size_t) half + 4096; ++i)
+        worstStep = std::max (worstStep, std::abs ((double) l[i] - (double) l[i - 1]));
+
+    double referenceStep = 0.0;
+    for (std::size_t i = from; i < (std::size_t) half - 4096; ++i)
+        referenceStep = std::max (referenceStep, std::abs ((double) l[i] - (double) l[i - 1]));
+
+    checkLess (worstStep, referenceStep * 1.5 + 1.0e-4,
+               "the polarity switch adds no step beyond the programme material");
+}
+
 void testLoudnessAtFullWidth()
 {
     beginCase ("Engine: loudness and mono fold down at full width");
@@ -675,6 +764,7 @@ void testParameterAutomation()
         parameters.sibilanceGuard = 50.0f + 50.0f * noise.next();
         parameters.transientFocus = 50.0f + 50.0f * noise.next();
         parameters.outputDb = 3.0f * noise.next();
+        parameters.invertSide = noise.next() > 0.0f;
         engine.setParameters (parameters);
 
         const int count = (int) std::min ((std::size_t) blockSize, left.size() - position);
@@ -765,6 +855,7 @@ int main()
     testTransientDuckIsSmooth();
     testWidthZeroIsNull();
     testMonoCompatibility();
+    testSidePolarityIsMonoNeutral();
     testLoudnessAtFullWidth();
     testTonalStability();
     testTransientHandling();
