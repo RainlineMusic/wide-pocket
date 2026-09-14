@@ -412,8 +412,10 @@ void PolarityButton::paintButton (juce::Graphics& g, bool hover, bool down)
     g.drawLine (c.x - glyph * 0.78f, c.y + glyph * 0.78f - 3.0f * s,
                 c.x + glyph * 0.78f, c.y - glyph * 0.78f - 3.0f * s, 1.8f * s);
 
-    text (g, "Phase", { c.x - r, c.y + 15.0f * s, 2 * r, 13.0f * s }, 10.0f * s, look.muted(),
-          juce::Justification::centred);
+    // Qualified on purpose: juce::Button has a private member named `text`,
+    // which hides the file-scope helper inside any Button subclass.
+    ::text (g, "Phase", { c.x - r, c.y + 15.0f * s, 2 * r, 13.0f * s }, 10.0f * s, look.muted(),
+            juce::Justification::centred);
 }
 
 // ---------------------------------------------------------------------------
